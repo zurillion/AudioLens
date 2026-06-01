@@ -5,8 +5,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var mainWindowController: MainWindowController?
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("[AudioLens] applicationDidFinishLaunching")
+    /// Builds the menu bar and main window. Called directly from main.swift
+    /// before the run loop starts, so it does not depend on the
+    /// applicationDidFinishLaunching notification being delivered.
+    func setUp() {
+        NSLog("[AudioLens] setUp")
         installMainMenu()
 
         let controller = MainWindowController()
@@ -14,9 +17,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         controller.window?.center()
-
-        NSApp.activate(ignoringOtherApps: true)
         NSLog("[AudioLens] window created: \(controller.window != nil), menu set: \(NSApp.mainMenu != nil)")
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("[AudioLens] applicationDidFinishLaunching (notification)")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
