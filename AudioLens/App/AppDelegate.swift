@@ -1,6 +1,9 @@
 import AppKit
 
-@main
+// NOTE: no @main. In AppKit, @main / NSApplicationMain does not connect the
+// delegate without a storyboard or nib, so applicationDidFinishLaunching never
+// fires and no window appears. The app is created and the delegate assigned
+// explicitly in main.swift instead.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
