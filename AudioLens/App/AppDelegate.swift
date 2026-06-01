@@ -1,13 +1,11 @@
 import AppKit
 
-@main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
         installMainMenu()
 
         let controller = MainWindowController()
