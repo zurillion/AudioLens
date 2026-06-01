@@ -20,7 +20,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = false
         window.contentViewController = rootViewController
         window.center()
-        window.setFrameAutosaveName("AudioLensMainWindow")
 
         super.init(window: window)
         window.delegate = self

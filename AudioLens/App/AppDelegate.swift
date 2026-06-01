@@ -6,16 +6,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("[AudioLens] applicationDidFinishLaunching")
         installMainMenu()
 
         let controller = MainWindowController()
-        controller.showWindow(nil)
         mainWindowController = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.window?.center()
 
         NSApp.activate(ignoringOtherApps: true)
+        NSLog("[AudioLens] window created: \(controller.window != nil), menu set: \(NSApp.mainMenu != nil)")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
     }
 
