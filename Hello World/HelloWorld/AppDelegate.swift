@@ -1,11 +1,14 @@
 import Cocoa
 
-@main
+// NOTE: no @main here. In AppKit, @main / NSApplicationMain does not connect
+// the delegate unless a storyboard/nib does it. For a programmatic app the
+// delegate is created and assigned explicitly in main.swift.
 class AppDelegate: NSObject, NSApplicationDelegate {
 
     var window: NSWindow!
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        NSLog("[HelloWorld] applicationDidFinishLaunching FIRED")
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 300),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -31,7 +34,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         self.window = window
 
-        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
 
