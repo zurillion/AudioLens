@@ -1,27 +1,22 @@
 import AppKit
 
+@main
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var mainWindowController: MainWindowController?
 
-    /// Builds the menu bar and main window. Called directly from main.swift
-    /// before the run loop starts, so it does not depend on the
-    /// applicationDidFinishLaunching notification being delivered.
-    func setUp() {
-        NSLog("[AudioLens] setUp")
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSLog("[AudioLens] applicationDidFinishLaunching FIRED")
         installMainMenu()
 
         let controller = MainWindowController()
         mainWindowController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
-        controller.window?.center()
-        NSLog("[AudioLens] window created: \(controller.window != nil), menu set: \(NSApp.mainMenu != nil)")
-    }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("[AudioLens] applicationDidFinishLaunching (notification)")
+        NSApp.activate(ignoringOtherApps: true)
+        NSLog("[AudioLens] window=\(controller.window != nil) menu=\(NSApp.mainMenu != nil) visible=\(controller.window?.isVisible ?? false)")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

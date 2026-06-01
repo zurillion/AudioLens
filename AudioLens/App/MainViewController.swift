@@ -25,6 +25,7 @@ final class MainViewController: NSViewController {
     override func loadView() {
         let root = NSView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720))
         root.wantsLayer = true
+        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         let waveContainer = waveformView
         let transport = transportView
