@@ -151,7 +151,7 @@ final class AudioEngine {
                           startFrame: AVAudioFramePosition,
                           frameCount: AVAudioFrameCount,
                           loops: Bool) {
-        let completion: AVAudioNodeCompletionHandler = { [weak self] in
+        let completion: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
                 if loops, self.state == .playing, let current = self.currentFile {
