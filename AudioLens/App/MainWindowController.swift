@@ -50,12 +50,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             try await audioEngine.load(url: url)
             rootViewController.didLoadAudio()
         } catch {
-            presentError(error)
+            showError(error)
         }
     }
 
-    private func presentError(_ error: Error) {
+    private func showError(_ error: any Error) {
+        guard let window else { return }
         let alert = NSAlert(error: error)
-        alert.beginSheetModal(for: window!, completionHandler: nil)
+        alert.beginSheetModal(for: window, completionHandler: nil)
     }
 }

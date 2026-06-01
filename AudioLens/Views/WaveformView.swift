@@ -67,7 +67,7 @@ final class WaveformView: NSView {
 
     /// Reads the file in PCM frames and reduces it to `buckets` (min, max) pairs.
     /// Runs off the main actor and is safe to cancel.
-    private static func computeOverview(url: URL, buckets: Int) throws -> ([Float], [Float]) {
+    nonisolated private static func computeOverview(url: URL, buckets: Int) throws -> ([Float], [Float]) {
         let reader = try AVAudioFile(forReading: url)
         let totalFrames = reader.length
         guard totalFrames > 0, buckets > 0 else { return ([], []) }

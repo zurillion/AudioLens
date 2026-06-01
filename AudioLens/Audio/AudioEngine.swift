@@ -154,8 +154,8 @@ final class AudioEngine {
         let completion: AVAudioNodeCompletionHandler = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
-                if loops, self.state == .playing {
-                    self.schedule(file: file,
+                if loops, self.state == .playing, let current = self.currentFile {
+                    self.schedule(file: current,
                                   startFrame: startFrame,
                                   frameCount: frameCount,
                                   loops: true)
