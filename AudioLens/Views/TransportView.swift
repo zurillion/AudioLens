@@ -20,7 +20,7 @@ final class TransportView: NSView {
     }
 
     func refresh() {
-        statusLabel.stringValue = audioEngine.currentFile?.url.lastPathComponent ?? "No file loaded"
+        statusLabel.stringValue = audioEngine.sourceURL?.lastPathComponent ?? "No file loaded"
     }
 
     private func setupSubviews() {

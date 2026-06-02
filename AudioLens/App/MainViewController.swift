@@ -63,8 +63,8 @@ final class MainViewController: NSViewController {
     }
 
     func didLoadAudio() {
-        if let file = audioEngine.currentFile {
-            waveformView.setFile(file)
+        if let buffer = audioEngine.fullBuffer {
+            waveformView.setBuffer(buffer)
         }
         transportView.refresh()
     }

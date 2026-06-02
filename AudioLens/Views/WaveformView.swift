@@ -1,20 +1,14 @@
 import AppKit
 import AVFoundation
 
-/// First-pass waveform renderer using Core Graphics. Reads the audio file in
-/// chunks, computes min/max per pixel column, draws filled lines.
-///
-/// Next steps:
-///  - Move to a Metal-backed view for fluid zoom on long files.
-///  - Cache the overview (one min/max per pixel at several zoom levels) to disk
-///    keyed on a hash of the source file.
-///  - Overlay selection regions and playhead.
+/// Renders the loaded audio buffer as a min/max overview using Core Graphics.
+/// Step 2 will add selection drag, selection overlay, playhead, and loop-mode
+/// integration. A Metal-backed version with on-disk overview cache will follow.
 @MainActor
 final class WaveformView: NSView {
 
     private var samplesMin: [Float] = []
     private var samplesMax: [Float] = []
-    private var loadTask: Task<Void, Never>?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -31,19 +25,12 @@ final class WaveformView: NSView {
 
     override var isFlipped: Bool { true }
 
-    func setFile(_ file: AVAudioFile) {
-        loadTask?.cancel()
-        let url = file.url
+    func setBuffer(_ buffer: AVAudioPCMBuffer) {
         let bucketCount = max(64, Int(bounds.width))
-        loadTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) {
-                try? Self.computeOverview(url: url, buckets: bucketCount)
-            }.value
-            guard let self, let (mins, maxs) = result else { return }
-            self.samplesMin = mins
-            self.samplesMax = maxs
-            self.needsDisplay = true
-        }
+        let (mins, maxs) = Self.computeOverview(buffer: buffer, buckets: bucketCount)
+        self.samplesMin = mins
+        self.samplesMax = maxs
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -65,39 +52,26 @@ final class WaveformView: NSView {
         ctx.strokePath()
     }
 
-    /// Reads the file in PCM frames and reduces it to `buckets` (min, max) pairs.
-    /// Runs off the main actor and is safe to cancel.
-    nonisolated private static func computeOverview(url: URL, buckets: Int) throws -> ([Float], [Float]) {
-        let reader = try AVAudioFile(forReading: url)
-        let totalFrames = reader.length
-        guard totalFrames > 0, buckets > 0 else { return ([], []) }
-
-        let framesPerBucket = max(1, Int(totalFrames) / buckets)
-        let format = reader.processingFormat
-        let bufferCapacity = AVAudioFrameCount(framesPerBucket)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: bufferCapacity) else {
+    /// Reduces the buffer to `buckets` (min, max) pairs. Float32 non-interleaved
+    /// is what SFBAudioEngine's processingFormat yields.
+    private static func computeOverview(buffer: AVAudioPCMBuffer, buckets: Int) -> ([Float], [Float]) {
+        let totalFrames = Int(buffer.frameLength)
+        guard totalFrames > 0, buckets > 0,
+              let channelData = buffer.floatChannelData else {
             return ([], [])
         }
+        let framesPerBucket = max(1, totalFrames / buckets)
+        let channels = Int(buffer.format.channelCount)
         var mins = [Float](repeating: 0, count: buckets)
         var maxs = [Float](repeating: 0, count: buckets)
-
         for bucket in 0..<buckets {
-            if Task.isCancelled { break }
-            buffer.frameLength = 0
-            do {
-                try reader.read(into: buffer, frameCount: bufferCapacity)
-            } catch {
-                break
-            }
-            let frames = Int(buffer.frameLength)
-            guard frames > 0, let channelData = buffer.floatChannelData else { break }
-
+            let start = bucket * framesPerBucket
+            let end = min(totalFrames, start + framesPerBucket)
             var lo: Float = 0
             var hi: Float = 0
-            let channels = Int(format.channelCount)
             for ch in 0..<channels {
                 let ptr = channelData[ch]
-                for i in 0..<frames {
+                for i in start..<end {
                     let v = ptr[i]
                     if v < lo { lo = v }
                     if v > hi { hi = v }

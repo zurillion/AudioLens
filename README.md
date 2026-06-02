@@ -45,10 +45,24 @@ xcodegen generate
 
 ## Dependencies
 
-Added via Swift Package Manager from within Xcode (not yet wired in pbxproj — see TODO):
+### SFBAudioEngine (required)
 
-- **SFBAudioEngine** — MIT — multi-format decoding
-- **Rubber Band Library** — GPL-3.0 — vendored as git submodule (TODO)
+Multi-format audio decoding (Opus, FLAC, Vorbis, WavPack, Musepack, Monkey's
+Audio, Shorten, True Audio, plus everything Core Audio handles natively).
+Add it through Xcode the first time you build:
+
+1. With `AudioLens.xcodeproj` open in Xcode: **File → Add Package Dependencies…**
+2. Enter the URL `https://github.com/sbooth/SFBAudioEngine`
+3. Dependency Rule: **Up to Next Major Version** from `3.0.0`
+4. Add the `SFBAudioEngine` product to the **AudioLens** target
+
+Once added, `import SFBAudioEngine` in `Audio/SFBAudioLoader.swift` resolves and
+the project builds.
+
+### Rubber Band Library (planned)
+
+High-quality pitch shifting and time stretching. Will be vendored as a git
+submodule and wrapped in a custom `AUAudioUnit`. GPL-3.0.
 
 ## License
 
