@@ -10,7 +10,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSLog("[AudioLens] applicationDidFinishLaunching FIRED")
         installMainMenu()
 
         let controller = MainWindowController()
@@ -19,7 +18,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.window?.makeKeyAndOrderFront(nil)
 
         NSApp.activate(ignoringOtherApps: true)
-        NSLog("[AudioLens] window=\(controller.window != nil) menu=\(NSApp.mainMenu != nil) visible=\(controller.window?.isVisible ?? false)")
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
