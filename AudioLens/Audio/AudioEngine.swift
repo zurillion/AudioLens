@@ -423,9 +423,13 @@ final class AudioEngine {
         engine.disconnectNodeOutput(pitchTime)
         engine.disconnectNodeOutput(eq)
 
-        engine.connect(player, to: pitchTime, format: format)
-        engine.connect(pitchTime, to: eq, format: format)
-        engine.connect(eq, to: mainMixer, format: format)
+        // DEBUG / ISOLATION: bypass pitchTime and EQ to test whether the loop
+        // silence bug originates in one of these downstream AUs. If looping
+        // works here, the culprit is in this segment of the chain and we
+        // re-introduce the nodes one at a time to identify which one.
+        engine.connect(player, to: mainMixer, format: format)
+        _ = pitchTime  // keep reference alive so its parameter UI still works
+        _ = eq
     }
 
     private func scheduleCurrentSelection() {
