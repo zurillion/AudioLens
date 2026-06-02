@@ -34,6 +34,16 @@ final class AudioEngine {
     /// seek and start from the selection's beginning) — it should just resume.
     private var pendingSeek: Bool = false
 
+    /// Captured playhead position at the moment pause() was called. The
+    /// player's playerTime(forNodeTime:) returns nil while paused (isPlaying
+    /// is false), which would otherwise make currentFramePosition collapse
+    /// back to scheduledStartFrame and the cursor "reset" visually.
+    private var pausedAtFrame: AVAudioFramePosition?
+
+    /// Strong reference to the slice currently scheduled with .loops, kept
+    /// just in case the player doesn't retain it across loop iterations.
+    private var loopingSlice: AVAudioPCMBuffer?
+
     /// Whether new region selections should loop. Toggling while a region is
     /// already active updates that region's loop flag immediately.
     var loopMode: Bool = false {
@@ -92,6 +102,8 @@ final class AudioEngine {
         selection = .whole
         scheduledStartFrame = 0
         pendingSeek = false
+        pausedAtFrame = nil
+        loopingSlice = nil
         connectGraph(processingFormat: normalised.format)
         if !engine.isRunning {
             do {
@@ -167,6 +179,7 @@ final class AudioEngine {
         if state == .paused {
             player.play()
             state = .playing
+            pausedAtFrame = nil
             return
         }
         if pendingSeek {
@@ -174,15 +187,20 @@ final class AudioEngine {
             player.play()
             state = .playing
             pendingSeek = false
+            pausedAtFrame = nil
             return
         }
         scheduleCurrentSelection()
         player.play()
         state = .playing
+        pausedAtFrame = nil
     }
 
     func pause() {
         guard state == .playing else { return }
+        // Capture the current playhead before pausing — playerTime returns nil
+        // once isPlaying is false, so we need to remember where we were.
+        pausedAtFrame = currentFramePosition
         player.pause()
         state = .paused
     }
@@ -191,6 +209,8 @@ final class AudioEngine {
         player.stop()
         scheduledStartFrame = selectionStartFrame
         pendingSeek = false
+        pausedAtFrame = nil
+        loopingSlice = nil
         state = sourceURL == nil ? .idle : .loaded
     }
 
@@ -212,6 +232,8 @@ final class AudioEngine {
         self.selection = selection
         scheduledStartFrame = selectionStartFrame
         pendingSeek = false
+        pausedAtFrame = nil
+        loopingSlice = nil
         switch state {
         case .playing:
             stop()
@@ -267,9 +289,11 @@ final class AudioEngine {
             // Play the partial seek-to-region-end first, then loop the full region.
             player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
             if let loopSlice = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
-                player.scheduleBuffer(loopSlice, at: nil, options: [.loops], completionHandler: completion)
+                loopingSlice = loopSlice
+                player.scheduleBuffer(loopSlice, at: nil, options: [.loops], completionHandler: nil)
             }
         } else {
+            loopingSlice = nil
             player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: completion)
         }
 
@@ -313,6 +337,9 @@ final class AudioEngine {
     /// overrides), and looped playback (sampleTime grows monotonically across
     /// loop iterations, so we map it back into the region).
     var currentFramePosition: AVAudioFramePosition {
+        if state == .paused, let frozen = pausedAtFrame {
+            return frozen
+        }
         guard state == .playing || state == .paused,
               let lastRender = player.lastRenderTime,
               let playerTime = player.playerTime(forNodeTime: lastRender) else {
@@ -390,6 +417,7 @@ final class AudioEngine {
     private func scheduleCurrentSelection() {
         guard let buffer = fullBuffer else { return }
         scheduledStartFrame = selectionStartFrame
+        loopingSlice = nil
         let completion: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in self?.handlePlaybackEnded() }
         }
@@ -401,13 +429,21 @@ final class AudioEngine {
                                   completionHandler: completion)
         case .region(let start, let length, let loops):
             guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
-            let options: AVAudioPlayerNodeBufferOptions = loops ? [.loops] : []
-            // .loops keeps the buffer playing forever — completion fires only
-            // when interrupted, so we still wire it up for state cleanup.
-            player.scheduleBuffer(slice,
-                                  at: nil,
-                                  options: options,
-                                  completionHandler: completion)
+            if loops {
+                // Apple's docs say the completion handler is ignored when
+                // .loops is set. Pass nil and keep a strong ref to the slice
+                // for the duration of the loop, in case the player drops it.
+                loopingSlice = slice
+                player.scheduleBuffer(slice,
+                                      at: nil,
+                                      options: [.loops],
+                                      completionHandler: nil)
+            } else {
+                player.scheduleBuffer(slice,
+                                      at: nil,
+                                      options: [],
+                                      completionHandler: completion)
+            }
         }
     }
 
