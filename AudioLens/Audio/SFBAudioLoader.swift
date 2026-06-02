@@ -9,12 +9,13 @@ import SFBAudioEngine
 /// libmpc, MAC (Monkey's Audio), Shorten, True Audio, libsndfile, plus everything
 /// Core Audio handles natively.
 ///
-/// Why convert per-chunk instead of after the concat: SFB's processingFormat
-/// for some files (notably WAV via libsndfile) can be interleaved or non-
-/// float32. Concatenating those buffers via `floatChannelData` silently
-/// produces zeros — leading to a silent buffer downstream. Running each chunk
-/// through AVAudioConverter forces a known float32 non-interleaved layout
-/// before we touch the data ourselves.
+/// Why a streaming AVAudioConverter rather than chunked-then-converted:
+/// AVAudioConverter is stateful (resampling carries filter history). Telling it
+/// `.endOfStream` after each chunk would make subsequent convert() calls
+/// produce nothing — leading to one or two seconds of audio followed by
+/// silence. Instead, the converter is invoked repeatedly with a single input
+/// block that lazily pulls source chunks from the SFB decoder, only signalling
+/// endOfStream when the decoder is truly exhausted.
 enum SFBAudioLoader {
 
     enum LoadError: Error, LocalizedError {
@@ -31,7 +32,8 @@ enum SFBAudioLoader {
         }
     }
 
-    private static let chunkCapacity: AVAudioFrameCount = 65_536
+    private static let sourceChunkCapacity: AVAudioFrameCount = 65_536
+    private static let targetChunkCapacity: AVAudioFrameCount = 65_536
     private static let supportedSampleRates: Set<Double> = [22_050, 44_100, 48_000, 88_200, 96_000]
 
     static func decode(url: URL) throws -> AVAudioPCMBuffer {
@@ -50,50 +52,66 @@ enum SFBAudioLoader {
             throw LoadError.converterCreationFailed
         }
 
-        let rateRatio = targetRate / sourceFormat.sampleRate
-        let targetChunkCapacity = AVAudioFrameCount(Double(chunkCapacity) * rateRatio) + 256
+        // Streaming input state shared across input-block invocations. The
+        // converter calls the block until it has filled its output buffer or
+        // the block returns endOfStream. Holding the current chunk keeps it
+        // alive for the converter to read from.
+        final class Stream: @unchecked Sendable {
+            let decoder: AudioDecoder
+            let sourceFormat: AVAudioFormat
+            var current: AVAudioPCMBuffer?
+            var exhausted = false
+            init(decoder: AudioDecoder, sourceFormat: AVAudioFormat) {
+                self.decoder = decoder
+                self.sourceFormat = sourceFormat
+            }
+        }
+        let stream = Stream(decoder: decoder, sourceFormat: sourceFormat)
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if stream.exhausted {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            guard let chunk = AVAudioPCMBuffer(pcmFormat: stream.sourceFormat,
+                                               frameCapacity: sourceChunkCapacity) else {
+                stream.exhausted = true
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            do {
+                try stream.decoder.decode(into: chunk)
+            } catch {
+                stream.exhausted = true
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            if chunk.frameLength == 0 {
+                stream.exhausted = true
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            stream.current = chunk
+            outStatus.pointee = .haveData
+            return chunk
+        }
 
         var convertedChunks: [AVAudioPCMBuffer] = []
-
         while true {
-            guard let sourceChunk = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: chunkCapacity) else {
+            guard let targetChunk = AVAudioPCMBuffer(pcmFormat: targetFormat,
+                                                     frameCapacity: targetChunkCapacity) else {
                 throw LoadError.allocationFailed
             }
-            try decoder.decode(into: sourceChunk)
-            let sourceFrames = sourceChunk.frameLength
-            if sourceFrames == 0 { break }
-
-            guard let targetChunk = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetChunkCapacity) else {
-                throw LoadError.allocationFailed
-            }
-
-            // AVAudioConverterInputBlock is @Sendable; capture state through a class.
-            final class Provider: @unchecked Sendable {
-                var consumed = false
-                let buffer: AVAudioPCMBuffer
-                init(_ b: AVAudioPCMBuffer) { self.buffer = b }
-            }
-            let provider = Provider(sourceChunk)
-            let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-                if provider.consumed {
-                    outStatus.pointee = .endOfStream
-                    return nil
-                }
-                provider.consumed = true
-                outStatus.pointee = .haveData
-                return provider.buffer
-            }
-
             var error: NSError?
             let status = converter.convert(to: targetChunk, error: &error, withInputFrom: inputBlock)
             if status == .error {
                 throw error ?? LoadError.converterCreationFailed
             }
-
             if targetChunk.frameLength > 0 {
                 convertedChunks.append(targetChunk)
             }
-            if sourceFrames < chunkCapacity { break }
+            if status == .endOfStream {
+                break
+            }
         }
 
         let totalFrames = convertedChunks.reduce(AVAudioFrameCount(0)) { $0 + $1.frameLength }
