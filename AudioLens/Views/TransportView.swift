@@ -124,8 +124,6 @@ final class TransportView: NSView {
     }
 
     @objc private func toggleLoop(_ sender: NSButton) {
-        let on = (sender.state == .on)
-        AudioLog.log("TransportView.toggleLoop -> \(on)")
-        audioEngine.loopMode = on
+        audioEngine.loopMode = (sender.state == .on)
     }
 }

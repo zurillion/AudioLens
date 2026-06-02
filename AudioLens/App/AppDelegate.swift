@@ -12,7 +12,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let recentMenuDelegate = RecentFilesMenuDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AudioLog.log("=== applicationDidFinishLaunching (BUILD MARKER) ===")
         installMainMenu()
 
         let controller = MainWindowController()
