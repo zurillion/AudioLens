@@ -82,6 +82,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: #selector(MainWindowController.stopPlayback(_:)),
             keyEquivalent: "."
         ))
+        let goToStartItem = NSMenuItem(
+            title: "Go to Start",
+            action: #selector(MainWindowController.goToStart(_:)),
+            keyEquivalent: "\t"
+        )
+        goToStartItem.keyEquivalentModifierMask = []
+        controlsMenu.addItem(goToStartItem)
         controlsMenuItem.submenu = controlsMenu
 
         NSApp.mainMenu = mainMenu

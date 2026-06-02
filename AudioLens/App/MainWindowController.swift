@@ -68,6 +68,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         audioEngine.stop()
     }
 
+    @objc func goToStart(_ sender: Any?) {
+        audioEngine.seekToStart()
+    }
+
     private func load(url: URL) async {
         do {
             try await audioEngine.load(url: url)
