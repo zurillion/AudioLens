@@ -6,7 +6,7 @@ import Foundation
 /// Emits via both NSLog and print because Xcode 26's console has, in this
 /// project, intermittently shown only one of the two.
 enum AudioLog {
-    static let buildMarker = "v8"
+    static let buildMarker = "v9"
 
     static func log(_ message: @autoclosure () -> String) {
         let line = "[AudioLens \(buildMarker)] \(message())"

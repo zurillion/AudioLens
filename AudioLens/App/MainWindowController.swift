@@ -27,6 +27,7 @@ final class AudioLensWindow: NSWindow {
             case 123, 124:  // Left, Right arrows
                 let magnitude = Self.seekSeconds(for: mods)
                 let direction: Double = (event.keyCode == 123) ? -1 : 1
+                AudioLog.log("arrow seek: keyCode=\(event.keyCode) seconds=\(magnitude * direction)")
                 onSeekRelative?(magnitude * direction)
                 return
             default:
