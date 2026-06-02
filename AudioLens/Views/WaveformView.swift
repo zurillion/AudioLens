@@ -112,7 +112,10 @@ final class WaveformView: NSView {
         if let (lo, hi) = activeSelectionRange() {
             let x1 = frameToPixel(lo)
             let x2 = frameToPixel(hi)
-            ctx.setFillColor(NSColor.selectedTextBackgroundColor.withAlphaComponent(0.35).cgColor)
+            // Pale, low-saturation yellow that stays visible on both light and
+            // dark text backgrounds.
+            let highlight = NSColor(srgbRed: 1.0, green: 0.90, blue: 0.45, alpha: 0.55)
+            ctx.setFillColor(highlight.cgColor)
             ctx.fill(NSRect(x: x1, y: 0, width: max(1, x2 - x1), height: bounds.height))
         }
 

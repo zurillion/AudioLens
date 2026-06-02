@@ -286,11 +286,18 @@ final class AudioEngine {
         }
 
         if let loop = keepLoopRegion {
-            // Play the partial seek-to-region-end first, then loop the full region.
-            player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
+            // Partial slice from seek point to region end (plays once), then
+            // the full region looped via manual re-scheduling.
             if let loopSlice = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
                 loopingSlice = loopSlice
-                player.scheduleBuffer(loopSlice, at: nil, options: [.loops], completionHandler: nil)
+                player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
+                player.scheduleBuffer(loopSlice,
+                                      at: nil,
+                                      options: [],
+                                      completionHandler: Self.loopCompletion(weakSelf: self))
+            } else {
+                loopingSlice = nil
+                player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: completion)
             }
         } else {
             loopingSlice = nil
@@ -430,19 +437,43 @@ final class AudioEngine {
         case .region(let start, let length, let loops):
             guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
             if loops {
-                // Apple's docs say the completion handler is ignored when
-                // .loops is set. Pass nil and keep a strong ref to the slice
-                // for the duration of the loop, in case the player drops it.
+                // Apple's .loops option proved unreliable here: the player's
+                // sampleTime kept advancing (so the cursor visually looped) but
+                // no audio came out after the first iteration. Re-schedule the
+                // same slice manually each time the previous one completes.
+                // A minor gap at the loop point is acceptable for now; we can
+                // pre-schedule a second copy ahead if/when seamlessness matters.
                 loopingSlice = slice
                 player.scheduleBuffer(slice,
                                       at: nil,
-                                      options: [.loops],
-                                      completionHandler: nil)
+                                      options: [],
+                                      completionHandler: Self.loopCompletion(weakSelf: self))
             } else {
                 player.scheduleBuffer(slice,
                                       at: nil,
                                       options: [],
                                       completionHandler: completion)
+            }
+        }
+    }
+
+    /// Re-schedules `loopingSlice` whenever the previous iteration finishes,
+    /// as long as we're still in a playing loop and the slice hasn't changed.
+    private func loopCompletion() {
+        guard state == .playing, let slice = loopingSlice else {
+            handlePlaybackEnded()
+            return
+        }
+        player.scheduleBuffer(slice,
+                              at: nil,
+                              options: [],
+                              completionHandler: Self.loopCompletion(weakSelf: self))
+    }
+
+    private static func loopCompletion(weakSelf: AudioEngine) -> @Sendable () -> Void {
+        return { [weak weakSelf] in
+            Task { @MainActor in
+                weakSelf?.loopCompletion()
             }
         }
     }
