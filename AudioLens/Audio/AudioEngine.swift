@@ -129,15 +129,25 @@ final class AudioEngine {
                           userInfo: [NSLocalizedDescriptionKey: "Could not allocate normalised buffer."])
         }
 
-        var inputConsumed = false
+        // AVAudioConverterInputBlock is @Sendable under Swift 6, so we can't
+        // capture a mutable Bool or a non-Sendable AVAudioPCMBuffer directly.
+        // AVAudioConverter calls the block synchronously from convert(), so a
+        // class shared between caller and block is safe — wrap the state in
+        // an @unchecked Sendable holder.
+        final class InputProvider: @unchecked Sendable {
+            var consumed = false
+            let buffer: AVAudioPCMBuffer
+            init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+        }
+        let provider = InputProvider(source)
         let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if inputConsumed {
+            if provider.consumed {
                 outStatus.pointee = .endOfStream
                 return nil
             }
-            inputConsumed = true
+            provider.consumed = true
             outStatus.pointee = .haveData
-            return source
+            return provider.buffer
         }
 
         var error: NSError?
