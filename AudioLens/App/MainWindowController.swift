@@ -1,17 +1,40 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// Window subclass that intercepts plain Tab in `sendEvent` and forwards it
+/// to the controller. NSEvent's local key monitor approach trips Swift 6's
+/// Sendable checking when reaching back into a MainActor-isolated controller,
+/// and a "\t" menu key equivalent never fires because AppKit's key-view focus
+/// loop consumes Tab first. Subclassing skips both problems: sendEvent runs
+/// on the main thread by definition (no Sendable closure crossing) and
+/// catches the event before any responder processing.
+@MainActor
+final class AudioLensWindow: NSWindow {
+    var onTabKey: (() -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown,
+           event.keyCode == 48,  // Tab
+           !event.modifierFlags.contains(.command),
+           !event.modifierFlags.contains(.option),
+           !event.modifierFlags.contains(.control) {
+            onTabKey?()
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
 @MainActor
 final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let audioEngine = AudioEngine()
     private let rootViewController: MainViewController
-    private var tabKeyMonitor: Any?
 
     init() {
         rootViewController = MainViewController(audioEngine: audioEngine)
 
-        let window = NSWindow(
+        let window = AudioLensWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -28,27 +51,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: window)
         window.delegate = self
-        installTabKeyMonitor()
-    }
-
-    /// Tab (keyCode 48) is consumed by AppKit's key-view focus loop before it
-    /// ever reaches a menu key equivalent, so a "\t" menu shortcut never fires.
-    /// Intercept it with a local event monitor instead. This app has no text
-    /// fields that need Tab for focus traversal, so consuming it is safe.
-    private func installTabKeyMonitor() {
-        tabKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Local key monitors are delivered on the main thread; assume the
-            // isolation so we can touch the MainActor-bound engine directly.
-            MainActor.assumeIsolated {
-                guard let self,
-                      event.window === self.window,
-                      event.keyCode == 48,
-                      !event.modifierFlags.contains(.command) else {
-                    return event
-                }
-                self.audioEngine.seekToStart()
-                return nil  // consume
-            }
+        window.onTabKey = { [weak self] in
+            self?.audioEngine.seekToStart()
         }
     }
 
