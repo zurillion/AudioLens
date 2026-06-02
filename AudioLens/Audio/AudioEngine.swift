@@ -235,25 +235,36 @@ final class AudioEngine {
         seek(toFrame: selectionStartFrame)
     }
 
-    /// Nudge the playhead by `seconds` (negative = backward). Clamped to the
-    /// active region when one is selected, otherwise to the whole file.
-    ///
-    /// We clamp one frame short of the end: seek() decides "inside region" with
-    /// `clamped < regionEnd`, so landing exactly on `regionEnd` would make it
-    /// treat the target as outside the region and clear the loop.
+    /// Nudge the playhead by `seconds` (negative = backward). When a looping
+    /// region is active, crossing either edge wraps modulo the region length
+    /// — the loop semantics extend to keyboard seeking. Otherwise the target
+    /// is clamped, one frame short of the exclusive end so seek()'s
+    /// "inside region" check still passes.
     func seekRelative(seconds: Double) {
         let delta = AVAudioFramePosition(seconds * sampleRate)
         let target = currentFramePosition + delta
         let lowerBound = selectionStartFrame
         let upperBoundExclusive: AVAudioFramePosition
+        let wrap: Bool
         switch selection {
         case .whole:
             upperBoundExclusive = totalFrames
-        case .region(let start, let length, _):
+            wrap = false
+        case .region(let start, let length, let loops):
             upperBoundExclusive = start + AVAudioFramePosition(length)
+            wrap = loops
         }
-        let upperBound = max(lowerBound, upperBoundExclusive - 1)
-        seek(toFrame: max(lowerBound, min(upperBound, target)))
+        let span = upperBoundExclusive - lowerBound
+        if wrap, span > 0 {
+            // Swift's % keeps the sign of the dividend, so add span and modulo
+            // again to land in [lowerBound, upperBoundExclusive).
+            var offset = (target - lowerBound) % span
+            if offset < 0 { offset += span }
+            seek(toFrame: lowerBound + offset)
+        } else {
+            let upperBound = max(lowerBound, upperBoundExclusive - 1)
+            seek(toFrame: max(lowerBound, min(upperBound, target)))
+        }
     }
 
     /// Output volume. 0.0 = silent, 1.0 = unity, up to 2.0 (200%). Values
