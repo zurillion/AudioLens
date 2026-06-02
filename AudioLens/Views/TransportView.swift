@@ -9,6 +9,8 @@ final class TransportView: NSView {
     private let stopButton = NSButton(title: "■ Stop", target: nil, action: nil)
     private let loopButton = NSButton(checkboxWithTitle: "Loop", target: nil, action: nil)
     private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
+    private let volumeSlider = NSSlider(value: 100, minValue: 0, maxValue: 200, target: nil, action: nil)
+    private let volumeLabel = NSTextField(labelWithString: "100%")
     private let statusLabel = NSTextField(labelWithString: "No file loaded")
 
     init(audioEngine: AudioEngine) {
@@ -51,7 +53,21 @@ final class TransportView: NSView {
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
-        let stack = NSStackView(views: [playButton, stopButton, loopButton, timeLabel, statusLabel])
+        volumeSlider.target = self
+        volumeSlider.action = #selector(volumeChanged(_:))
+        volumeSlider.isContinuous = true
+        volumeSlider.doubleValue = Double(audioEngine.volume) * 100
+        volumeSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        volumeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        volumeLabel.alignment = .right
+        volumeLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        updateVolumeLabel()
+        let volumeIcon = NSTextField(labelWithString: "🔊")
+
+        let stack = NSStackView(views: [
+            playButton, stopButton, loopButton, timeLabel,
+            volumeIcon, volumeSlider, volumeLabel, statusLabel
+        ])
         stack.orientation = .horizontal
         stack.spacing = 12
         stack.alignment = .centerY
@@ -70,6 +86,15 @@ final class TransportView: NSView {
         let current = Double(audioEngine.currentFramePosition) / rate
         let total = Double(audioEngine.totalFrames) / rate
         timeLabel.stringValue = "\(Self.formatTime(current)) / \(Self.formatTime(total))"
+    }
+
+    private func updateVolumeLabel() {
+        volumeLabel.stringValue = "\(Int(volumeSlider.doubleValue.rounded()))%"
+    }
+
+    @objc private func volumeChanged(_ sender: NSSlider) {
+        audioEngine.volume = Float(sender.doubleValue / 100.0)
+        updateVolumeLabel()
     }
 
     private static func formatTime(_ seconds: Double) -> String {

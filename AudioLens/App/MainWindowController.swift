@@ -11,17 +11,37 @@ import UniformTypeIdentifiers
 @MainActor
 final class AudioLensWindow: NSWindow {
     var onTabKey: (() -> Void)?
+    /// Signed seconds to seek (negative = backward), computed from the arrow
+    /// key direction and its modifiers.
+    var onSeekRelative: ((Double) -> Void)?
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown,
-           event.keyCode == 48,  // Tab
-           !event.modifierFlags.contains(.command),
-           !event.modifierFlags.contains(.option),
-           !event.modifierFlags.contains(.control) {
-            onTabKey?()
-            return
+        if event.type == .keyDown {
+            let mods = event.modifierFlags
+            switch event.keyCode {
+            case 48:  // Tab
+                if !mods.contains(.command), !mods.contains(.option), !mods.contains(.control) {
+                    onTabKey?()
+                    return
+                }
+            case 123, 124:  // Left, Right arrows
+                let magnitude = Self.seekSeconds(for: mods)
+                let direction: Double = (event.keyCode == 123) ? -1 : 1
+                onSeekRelative?(magnitude * direction)
+                return
+            default:
+                break
+            }
         }
         super.sendEvent(event)
+    }
+
+    /// Step size for arrow-key seeking, per the requested modifier mapping.
+    private static func seekSeconds(for mods: NSEvent.ModifierFlags) -> Double {
+        if mods.contains(.command) { return 30 }
+        if mods.contains(.option) { return 10 }
+        if mods.contains(.control) { return 5 }
+        return 2.5
     }
 }
 
@@ -53,6 +73,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.delegate = self
         window.onTabKey = { [weak self] in
             self?.audioEngine.seekToStart()
+        }
+        window.onSeekRelative = { [weak self] seconds in
+            self?.audioEngine.seekRelative(seconds: seconds)
         }
     }
 

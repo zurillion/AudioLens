@@ -235,6 +235,29 @@ final class AudioEngine {
         seek(toFrame: selectionStartFrame)
     }
 
+    /// Nudge the playhead by `seconds` (negative = backward). Clamped to the
+    /// active region when one is selected, otherwise to the whole file.
+    func seekRelative(seconds: Double) {
+        let delta = AVAudioFramePosition(seconds * sampleRate)
+        let target = currentFramePosition + delta
+        let lowerBound = selectionStartFrame
+        let upperBound: AVAudioFramePosition
+        switch selection {
+        case .whole:
+            upperBound = totalFrames
+        case .region(let start, let length, _):
+            upperBound = start + AVAudioFramePosition(length)
+        }
+        seek(toFrame: max(lowerBound, min(upperBound, target)))
+    }
+
+    /// Output volume. 0.0 = silent, 1.0 = unity, up to 2.0 (200%). Values
+    /// above unity can clip on already-hot material.
+    var volume: Float {
+        get { engine.mainMixerNode.outputVolume }
+        set { engine.mainMixerNode.outputVolume = max(0, min(2.0, newValue)) }
+    }
+
     /// Toggle play/pause for the spacebar shortcut.
     func togglePlayPause() {
         switch state {
