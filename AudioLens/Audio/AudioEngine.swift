@@ -287,10 +287,15 @@ final class AudioEngine {
 
         if let loop = keepLoopRegion {
             // Partial slice from seek point to region end (plays once), then
-            // the full region looped via manual re-scheduling.
+            // the full region looped via manual re-scheduling. Pre-schedule
+            // two copies of the loop slice so the boundary is seamless.
             if let loopSlice = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
                 loopingSlice = loopSlice
                 player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
+                player.scheduleBuffer(loopSlice,
+                                      at: nil,
+                                      options: [],
+                                      completionHandler: Self.loopCompletion(weakSelf: self))
                 player.scheduleBuffer(loopSlice,
                                       at: nil,
                                       options: [],
@@ -437,13 +442,17 @@ final class AudioEngine {
         case .region(let start, let length, let loops):
             guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
             if loops {
-                // Apple's .loops option proved unreliable here: the player's
-                // sampleTime kept advancing (so the cursor visually looped) but
-                // no audio came out after the first iteration. Re-schedule the
-                // same slice manually each time the previous one completes.
-                // A minor gap at the loop point is acceptable for now; we can
-                // pre-schedule a second copy ahead if/when seamlessness matters.
+                // Manual loop. The audio chain runs dry the instant the player
+                // queue empties; the completion is dispatched through the audio
+                // thread and a Task @MainActor hop, which is too slow to re-fill
+                // without an audible drop-out. Pre-schedule two copies so the
+                // queue starts at depth 2, and each completion adds one more
+                // — depth stays at ~2 and the boundary is seamless.
                 loopingSlice = slice
+                player.scheduleBuffer(slice,
+                                      at: nil,
+                                      options: [],
+                                      completionHandler: Self.loopCompletion(weakSelf: self))
                 player.scheduleBuffer(slice,
                                       at: nil,
                                       options: [],

@@ -109,17 +109,18 @@ final class WaveformView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
+        // Draw the waveform first, then the selection overlay on top of it.
+        // The translucent yellow tints the audio inside the loop, making it
+        // visually distinct from the un-selected region.
+        drawWaveform(ctx)
+
         if let (lo, hi) = activeSelectionRange() {
             let x1 = frameToPixel(lo)
             let x2 = frameToPixel(hi)
-            // Pale, low-saturation yellow that stays visible on both light and
-            // dark text backgrounds.
-            let highlight = NSColor(srgbRed: 1.0, green: 0.90, blue: 0.45, alpha: 0.55)
+            let highlight = NSColor(srgbRed: 1.0, green: 0.85, blue: 0.35, alpha: 0.45)
             ctx.setFillColor(highlight.cgColor)
             ctx.fill(NSRect(x: x1, y: 0, width: max(1, x2 - x1), height: bounds.height))
         }
-
-        drawWaveform(ctx)
 
         if totalFrames > 0 {
             let playX = frameToPixel(playheadFrame)
