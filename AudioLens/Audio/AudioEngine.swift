@@ -23,6 +23,12 @@ final class AudioEngine {
     private(set) var fullBuffer: AVAudioPCMBuffer?
     private(set) var selection: Selection = .whole
 
+    /// Absolute frame from which the currently scheduled slice starts playing.
+    /// Used so the playhead position is correct after a seek even before the
+    /// player begins consuming samples. Defaults to the selection's start
+    /// after a normal play(), is overridden by seek() to the seek target.
+    private var scheduledStartFrame: AVAudioFramePosition = 0
+
     /// Whether new region selections should loop. Toggling while a region is
     /// already active updates that region's loop flag immediately.
     var loopMode: Bool = false {
@@ -67,6 +73,7 @@ final class AudioEngine {
         sourceURL = url
         fullBuffer = buffer
         selection = .whole
+        scheduledStartFrame = 0
         connectGraph(processingFormat: buffer.format)
         if !engine.isRunning {
             do {
@@ -100,13 +107,27 @@ final class AudioEngine {
 
     func stop() {
         player.stop()
+        scheduledStartFrame = selectionStartFrame
         state = sourceURL == nil ? .idle : .loaded
+    }
+
+    /// Toggle play/pause for the spacebar shortcut.
+    func togglePlayPause() {
+        switch state {
+        case .playing:
+            pause()
+        case .paused, .loaded:
+            play()
+        case .idle:
+            break
+        }
     }
 
     // MARK: - Selection
 
     func setSelection(_ selection: Selection) {
         self.selection = selection
+        scheduledStartFrame = selectionStartFrame
         switch state {
         case .playing:
             stop()
@@ -120,9 +141,63 @@ final class AudioEngine {
         }
     }
 
-    /// Absolute frame offset where the current selection begins. The slice
-    /// scheduled on the player counts from zero, so we add this offset to map
-    /// the player's sampleTime back to a position in the original buffer.
+    /// Move the playhead to an absolute frame in the file. If the click lands
+    /// inside the active region, stay in the loop (seek within); otherwise
+    /// clear the region and play from the seek point through the end of file.
+    /// Continues playback if it was playing.
+    func seek(toFrame frame: AVAudioFramePosition) {
+        guard let buffer = fullBuffer else { return }
+        let wasPlaying = (state == .playing)
+        let total = totalFrames
+        let clamped = max(0, min(total, frame))
+
+        var keepLoopRegion: (start: AVAudioFramePosition, length: AVAudioFrameCount)? = nil
+        var sliceEnd: AVAudioFramePosition = total
+
+        if case .region(let start, let length, let loops) = selection {
+            let regionEnd = start + AVAudioFramePosition(length)
+            if clamped >= start && clamped < regionEnd {
+                sliceEnd = regionEnd
+                if loops { keepLoopRegion = (start, length) }
+            } else {
+                // Click outside the region: clear it.
+                selection = .whole
+            }
+        }
+
+        player.stop()
+        scheduledStartFrame = clamped
+
+        let initialLength = AVAudioFrameCount(sliceEnd - clamped)
+        guard initialLength > 0,
+              let initialSlice = Self.makeSlice(of: buffer, start: clamped, length: initialLength) else {
+            state = .loaded
+            return
+        }
+
+        let completion: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor in self?.handlePlaybackEnded() }
+        }
+
+        if let loop = keepLoopRegion {
+            // Play the partial seek-to-region-end first, then loop the full region.
+            player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
+            if let loopSlice = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
+                player.scheduleBuffer(loopSlice, at: nil, options: [.loops], completionHandler: completion)
+            }
+        } else {
+            player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: completion)
+        }
+
+        if wasPlaying {
+            player.play()
+            state = .playing
+        } else {
+            state = .loaded
+        }
+    }
+
+    /// Absolute frame offset where the current selection begins.
     var selectionStartFrame: AVAudioFramePosition {
         switch selection {
         case .whole:
@@ -148,23 +223,33 @@ final class AudioEngine {
     }
 
     /// Absolute playhead position in the original buffer's frame space.
-    /// Returns the selection start when the player isn't running. During
-    /// looping the player's sampleTime grows monotonically, so we modulo it
-    /// back into the active region.
+    /// Accounts for: normal play from selection start, seek (scheduledStartFrame
+    /// overrides), and looped playback (sampleTime grows monotonically across
+    /// loop iterations, so we map it back into the region).
     var currentFramePosition: AVAudioFramePosition {
         guard state == .playing || state == .paused,
               let lastRender = player.lastRenderTime,
               let playerTime = player.playerTime(forNodeTime: lastRender) else {
-            return selectionStartFrame
+            return scheduledStartFrame
         }
         let elapsed = max(0, playerTime.sampleTime)
         switch selection {
         case .whole:
-            return min(elapsed, totalFrames)
+            return min(scheduledStartFrame + elapsed, totalFrames)
         case .region(let start, let length, _):
             let lengthFrames = AVAudioFramePosition(length)
             guard lengthFrames > 0 else { return start }
-            return start + (elapsed % lengthFrames)
+            let regionEnd = start + lengthFrames
+            // After a seek-within-region, the first slice plays from
+            // scheduledStartFrame to regionEnd (possibly shorter than length).
+            // Once that completes, the looping slice [start, regionEnd) takes over.
+            let firstIterFrames = max(AVAudioFramePosition(0), regionEnd - scheduledStartFrame)
+            if elapsed < firstIterFrames {
+                return scheduledStartFrame + elapsed
+            } else {
+                let afterFirst = elapsed - firstIterFrames
+                return start + (afterFirst % lengthFrames)
+            }
         }
     }
 
@@ -218,6 +303,7 @@ final class AudioEngine {
 
     private func scheduleCurrentSelection() {
         guard let buffer = fullBuffer else { return }
+        scheduledStartFrame = selectionStartFrame
         let completion: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in self?.handlePlaybackEnded() }
         }

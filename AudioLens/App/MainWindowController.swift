@@ -44,10 +44,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc func openRecentFile(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        Task {
+            // Bookmarks resolved by NSDocumentController are session-valid,
+            // but we still ask for security-scoped access in case the URL
+            // came from a different scope.
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            await load(url: url)
+        }
+    }
+
+    @objc func togglePlayPause(_ sender: Any?) {
+        audioEngine.togglePlayPause()
+    }
+
+    @objc func stopPlayback(_ sender: Any?) {
+        audioEngine.stop()
+    }
+
     private func load(url: URL) async {
         do {
             try await audioEngine.load(url: url)
             rootViewController.didLoadAudio()
+            NSDocumentController.shared.noteNewRecentDocumentURL(url)
         } catch {
             showError(error)
         }

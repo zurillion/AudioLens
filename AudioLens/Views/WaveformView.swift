@@ -2,11 +2,8 @@ import AppKit
 import AVFoundation
 
 /// Renders the loaded audio buffer with an interactive region selection and a
-/// live playhead. Drag horizontally to define a region; a near-zero-width drag
-/// (click without movement) clears the selection back to the whole file.
-///
-/// Future work: Metal-backed renderer, on-disk overview cache, edge handles to
-/// resize an existing region, snap to zero-crossings.
+/// live playhead. A horizontal drag defines a region (translucent overlay); a
+/// click without measurable drag emits a seek to that point.
 @MainActor
 final class WaveformView: NSView {
 
@@ -28,11 +25,15 @@ final class WaveformView: NSView {
     /// Called when the user finishes a drag that defines a new region.
     var onRegionSelected: ((AVAudioFramePosition, AVAudioFrameCount) -> Void)?
 
-    /// Called when a click without drag clears the active selection.
-    var onSelectionCleared: (() -> Void)?
+    /// Called when the user clicks without dragging — seek to that frame.
+    var onSeek: ((AVAudioFramePosition) -> Void)?
 
-    private var dragStartFrame: AVAudioFramePosition?
-    private var dragCurrentFrame: AVAudioFramePosition?
+    /// Pixel distance below which a mouse event is treated as a click (seek)
+    /// rather than a drag (region selection).
+    private let clickDragThreshold: CGFloat = 4
+
+    private var dragStartPixel: CGFloat?
+    private var dragCurrentPixel: CGFloat?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -59,8 +60,8 @@ final class WaveformView: NSView {
         self.samplesMax = maxs
         playheadFrame = 0
         selection = .whole
-        dragStartFrame = nil
-        dragCurrentFrame = nil
+        dragStartPixel = nil
+        dragCurrentPixel = nil
         needsDisplay = true
     }
 
@@ -69,36 +70,37 @@ final class WaveformView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard totalFrames > 0 else { return }
         let point = convert(event.locationInWindow, from: nil)
-        let frame = pixelToFrame(point.x)
-        dragStartFrame = frame
-        dragCurrentFrame = frame
+        dragStartPixel = point.x
+        dragCurrentPixel = point.x
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard dragStartFrame != nil else { return }
+        guard dragStartPixel != nil else { return }
         let point = convert(event.locationInWindow, from: nil)
-        dragCurrentFrame = pixelToFrame(point.x)
+        dragCurrentPixel = point.x
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
         defer {
-            dragStartFrame = nil
-            dragCurrentFrame = nil
+            dragStartPixel = nil
+            dragCurrentPixel = nil
             needsDisplay = true
         }
-        guard let start = dragStartFrame, let end = dragCurrentFrame, totalFrames > 0 else {
+        guard let startPx = dragStartPixel, let endPx = dragCurrentPixel, totalFrames > 0 else {
             return
         }
-        let lo = min(start, end)
-        let hi = max(start, end)
-        let length = hi - lo
-        let clickThreshold = max(AVAudioFramePosition(1), totalFrames / 500)
-        if length < clickThreshold {
-            onSelectionCleared?()
+        let pixelDistance = abs(endPx - startPx)
+        if pixelDistance < clickDragThreshold {
+            // Click — emit a seek.
+            onSeek?(pixelToFrame(startPx))
         } else {
-            onRegionSelected?(lo, AVAudioFrameCount(length))
+            let loPx = min(startPx, endPx)
+            let hiPx = max(startPx, endPx)
+            let lo = pixelToFrame(loPx)
+            let hi = pixelToFrame(hiPx)
+            onRegionSelected?(lo, AVAudioFrameCount(hi - lo))
         }
     }
 
@@ -144,13 +146,14 @@ final class WaveformView: NSView {
         ctx.strokePath()
     }
 
-    /// Returns the (lo, hi) frame range to highlight: the live drag if one is
-    /// in progress, otherwise the committed selection (if any).
+    /// Returns the (lo, hi) frame range to highlight: the live drag if it
+    /// already exceeds the click threshold, otherwise the committed selection.
     private func activeSelectionRange() -> (AVAudioFramePosition, AVAudioFramePosition)? {
-        if let s = dragStartFrame, let e = dragCurrentFrame {
-            let lo = min(s, e)
-            let hi = max(s, e)
-            return hi > lo ? (lo, hi) : nil
+        if let s = dragStartPixel, let e = dragCurrentPixel,
+           abs(e - s) >= clickDragThreshold {
+            let loPx = min(s, e)
+            let hiPx = max(s, e)
+            return (pixelToFrame(loPx), pixelToFrame(hiPx))
         }
         switch selection {
         case .whole:

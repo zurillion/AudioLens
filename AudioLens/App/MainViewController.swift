@@ -69,10 +69,10 @@ final class MainViewController: NSViewController {
             )
             self.waveformView.selection = self.audioEngine.selection
         }
-        waveformView.onSelectionCleared = { [weak self] in
+        waveformView.onSeek = { [weak self] frame in
             guard let self else { return }
-            self.audioEngine.setSelection(.whole)
-            self.waveformView.selection = .whole
+            self.audioEngine.seek(toFrame: frame)
+            self.waveformView.selection = self.audioEngine.selection
         }
     }
 
