@@ -10,20 +10,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
     private let recentMenuDelegate = RecentFilesMenuDelegate()
 
-    /// Builds the menu bar and main window. Called directly from main.swift
-    /// before the run loop starts, so it does not depend on the
-    /// applicationDidFinishLaunching notification being delivered.
-    func setUp() {
+    func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
 
         let controller = MainWindowController()
         mainWindowController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
-    }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        // Intentionally empty: setUp() ran from main.swift before the run loop.
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
