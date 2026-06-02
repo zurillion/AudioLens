@@ -74,13 +74,25 @@ final class AudioEngine {
     }
 
     private func installBuffer(_ buffer: AVAudioPCMBuffer, url: URL) {
+        // AVAudioUnitTimePitch (and the mixer) reject non-standard formats with
+        // an NSException — which on Swift means a crash. Convert the decoded
+        // buffer to a known-good format (float32 non-interleaved stereo, a
+        // sample rate in {22.05, 44.1, 48, 88.2, 96} kHz) up front.
+        let normalised: AVAudioPCMBuffer
+        do {
+            normalised = try Self.normalisedBuffer(from: buffer)
+        } catch {
+            NSLog("AudioEngine: format normalisation failed: \(error)")
+            return
+        }
+
         stop()
         sourceURL = url
-        fullBuffer = buffer
+        fullBuffer = normalised
         selection = .whole
         scheduledStartFrame = 0
         pendingSeek = false
-        connectGraph(processingFormat: buffer.format)
+        connectGraph(processingFormat: normalised.format)
         if !engine.isRunning {
             do {
                 try engine.start()
@@ -89,6 +101,53 @@ final class AudioEngine {
             }
         }
         state = .loaded
+    }
+
+    private static let supportedSampleRates: Set<Double> = [22_050, 44_100, 48_000, 88_200, 96_000]
+
+    private static func normalisedBuffer(from source: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+        let sourceFormat = source.format
+        let targetRate = supportedSampleRates.contains(sourceFormat.sampleRate) ? sourceFormat.sampleRate : 48_000
+        guard let targetFormat = AVAudioFormat(standardFormatWithSampleRate: targetRate, channels: 2) else {
+            throw NSError(domain: "AudioLens",
+                          code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not build target processing format."])
+        }
+        if sourceFormat.isEqual(targetFormat) {
+            return source
+        }
+        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
+            throw NSError(domain: "AudioLens",
+                          code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not create AVAudioConverter from \(sourceFormat) to \(targetFormat)."])
+        }
+        let ratio = targetRate / sourceFormat.sampleRate
+        let outputCapacity = AVAudioFrameCount(Double(source.frameLength) * ratio) + 1_024
+        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else {
+            throw NSError(domain: "AudioLens",
+                          code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Could not allocate normalised buffer."])
+        }
+
+        var inputConsumed = false
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if inputConsumed {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            inputConsumed = true
+            outStatus.pointee = .haveData
+            return source
+        }
+
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error, withInputFrom: inputBlock)
+        if status == .error {
+            throw error ?? NSError(domain: "AudioLens",
+                                   code: -4,
+                                   userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter failed."])
+        }
+        return output
     }
 
     // MARK: - Transport
