@@ -23,6 +23,17 @@ final class AudioEngine {
     private(set) var fullBuffer: AVAudioPCMBuffer?
     private(set) var selection: Selection = .whole
 
+    /// Whether new region selections should loop. Toggling while a region is
+    /// already active updates that region's loop flag immediately.
+    var loopMode: Bool = false {
+        didSet {
+            guard oldValue != loopMode else { return }
+            if case .region(let start, let length, _) = selection {
+                setSelection(.region(start: start, length: length, loops: loopMode))
+            }
+        }
+    }
+
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
     /// Placeholder pitch/time node. Will be replaced by a custom AUAudioUnit
@@ -96,9 +107,16 @@ final class AudioEngine {
 
     func setSelection(_ selection: Selection) {
         self.selection = selection
-        if state == .playing {
+        switch state {
+        case .playing:
             stop()
             play()
+        case .paused:
+            // The scheduled buffer is now stale; discard it so the next play()
+            // reschedules the new selection from its start.
+            stop()
+        case .loaded, .idle:
+            break
         }
     }
 
@@ -122,6 +140,37 @@ final class AudioEngine {
         case .region(_, let length, _):
             return length
         }
+    }
+
+    /// Total frame count of the loaded file.
+    var totalFrames: AVAudioFramePosition {
+        AVAudioFramePosition(fullBuffer?.frameLength ?? 0)
+    }
+
+    /// Absolute playhead position in the original buffer's frame space.
+    /// Returns the selection start when the player isn't running. During
+    /// looping the player's sampleTime grows monotonically, so we modulo it
+    /// back into the active region.
+    var currentFramePosition: AVAudioFramePosition {
+        guard state == .playing || state == .paused,
+              let lastRender = player.lastRenderTime,
+              let playerTime = player.playerTime(forNodeTime: lastRender) else {
+            return selectionStartFrame
+        }
+        let elapsed = max(0, playerTime.sampleTime)
+        switch selection {
+        case .whole:
+            return min(elapsed, totalFrames)
+        case .region(let start, let length, _):
+            let lengthFrames = AVAudioFramePosition(length)
+            guard lengthFrames > 0 else { return start }
+            return start + (elapsed % lengthFrames)
+        }
+    }
+
+    /// Audio sample rate, for converting frames to seconds.
+    var sampleRate: Double {
+        fullBuffer?.format.sampleRate ?? 44_100
     }
 
     // MARK: - Pitch & time

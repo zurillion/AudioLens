@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 
 @MainActor
 final class TransportView: NSView {
@@ -6,6 +7,8 @@ final class TransportView: NSView {
     private let audioEngine: AudioEngine
     private let playButton = NSButton(title: "▶︎ Play", target: nil, action: nil)
     private let stopButton = NSButton(title: "■ Stop", target: nil, action: nil)
+    private let loopButton = NSButton(checkboxWithTitle: "Loop", target: nil, action: nil)
+    private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
     private let statusLabel = NSTextField(labelWithString: "No file loaded")
 
     init(audioEngine: AudioEngine) {
@@ -21,6 +24,20 @@ final class TransportView: NSView {
 
     func refresh() {
         statusLabel.stringValue = audioEngine.sourceURL?.lastPathComponent ?? "No file loaded"
+        loopButton.state = audioEngine.loopMode ? .on : .off
+        updateTimeLabel()
+    }
+
+    func updatePlayheadDisplay() {
+        updateTimeLabel()
+        // Keep the play button label in sync with engine state in case the
+        // user paused via another path (e.g. playback finished).
+        switch audioEngine.state {
+        case .playing:
+            playButton.title = "❚❚ Pause"
+        case .paused, .loaded, .idle:
+            playButton.title = "▶︎ Play"
+        }
     }
 
     private func setupSubviews() {
@@ -28,8 +45,12 @@ final class TransportView: NSView {
         playButton.action = #selector(togglePlay(_:))
         stopButton.target = self
         stopButton.action = #selector(stop(_:))
+        loopButton.target = self
+        loopButton.action = #selector(toggleLoop(_:))
 
-        let stack = NSStackView(views: [playButton, stopButton, statusLabel])
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+
+        let stack = NSStackView(views: [playButton, stopButton, loopButton, timeLabel, statusLabel])
         stack.orientation = .horizontal
         stack.spacing = 12
         stack.alignment = .centerY
@@ -41,6 +62,21 @@ final class TransportView: NSView {
             stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    private func updateTimeLabel() {
+        let rate = audioEngine.sampleRate
+        let current = Double(audioEngine.currentFramePosition) / rate
+        let total = Double(audioEngine.totalFrames) / rate
+        timeLabel.stringValue = "\(Self.formatTime(current)) / \(Self.formatTime(total))"
+    }
+
+    private static func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let totalSeconds = Int(seconds.rounded(.down))
+        let m = totalSeconds / 60
+        let s = totalSeconds % 60
+        return String(format: "%d:%02d", m, s)
     }
 
     @objc private func togglePlay(_ sender: NSButton) {
@@ -59,5 +95,9 @@ final class TransportView: NSView {
     @objc private func stop(_ sender: NSButton) {
         audioEngine.stop()
         playButton.title = "▶︎ Play"
+    }
+
+    @objc private func toggleLoop(_ sender: NSButton) {
+        audioEngine.loopMode = (sender.state == .on)
     }
 }

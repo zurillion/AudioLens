@@ -8,6 +8,7 @@ final class MainViewController: NSViewController {
     private let transportView: TransportView
     private let eqView: EQView
     private let pitchTimeView: PitchTimeView
+    private var playheadTimer: Timer?
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
@@ -20,6 +21,10 @@ final class MainViewController: NSViewController {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        playheadTimer?.invalidate()
     }
 
     override func loadView() {
@@ -60,6 +65,46 @@ final class MainViewController: NSViewController {
         ])
 
         self.view = root
+
+        waveformView.onRegionSelected = { [weak self] start, length in
+            guard let self else { return }
+            self.audioEngine.setSelection(
+                .region(start: start, length: length, loops: self.audioEngine.loopMode)
+            )
+            self.waveformView.selection = self.audioEngine.selection
+        }
+        waveformView.onSelectionCleared = { [weak self] in
+            guard let self else { return }
+            self.audioEngine.setSelection(.whole)
+            self.waveformView.selection = .whole
+        }
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        startPlayheadTimer()
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        playheadTimer?.invalidate()
+        playheadTimer = nil
+    }
+
+    private func startPlayheadTimer() {
+        playheadTimer?.invalidate()
+        // 30 Hz is smooth enough for a playhead line; we can switch to
+        // CADisplayLink when the Metal waveform renderer lands.
+        playheadTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshPlayhead()
+            }
+        }
+    }
+
+    private func refreshPlayhead() {
+        waveformView.playheadFrame = audioEngine.currentFramePosition
+        transportView.updatePlayheadDisplay()
     }
 
     func didLoadAudio() {
