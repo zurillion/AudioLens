@@ -8,6 +8,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var mainWindowController: MainWindowController?
+    private var preferencesWindowController: PreferencesWindowController?
     private let recentMenuDelegate = RecentFilesMenuDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -41,6 +42,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Settings…",
+                        action: #selector(showPreferences(_:)),
+                        keyEquivalent: ",")
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Hide AudioLens",
                         action: #selector(NSApplication.hide(_:)),
                         keyEquivalent: "h")
@@ -66,32 +71,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(openRecentItem)
         fileMenuItem.submenu = fileMenu
 
-        // Controls menu (Play/Pause via Spacebar)
+        // Controls menu. The keyboard shortcuts for these actions are not set
+        // here as menu key equivalents — they're handled by
+        // AudioLensWindow.sendEvent reading KeyBindings.shared, so they stay in
+        // sync with what the user sets in Preferences. The menu items remain
+        // clickable, and shortcuts can be inspected/changed in Preferences.
         let controlsMenuItem = NSMenuItem()
         mainMenu.addItem(controlsMenuItem)
         let controlsMenu = NSMenu(title: "Controls")
-        let playPauseItem = NSMenuItem(
-            title: "Play/Pause",
+        controlsMenu.addItem(NSMenuItem(
+            title: "Play / Pause",
             action: #selector(MainWindowController.togglePlayPause(_:)),
-            keyEquivalent: " "
-        )
-        playPauseItem.keyEquivalentModifierMask = []
-        controlsMenu.addItem(playPauseItem)
+            keyEquivalent: ""
+        ))
         controlsMenu.addItem(NSMenuItem(
             title: "Stop",
             action: #selector(MainWindowController.stopPlayback(_:)),
-            keyEquivalent: "."
+            keyEquivalent: ""
         ))
-        let goToStartItem = NSMenuItem(
+        controlsMenu.addItem(NSMenuItem(
             title: "Go to Start",
             action: #selector(MainWindowController.goToStart(_:)),
-            keyEquivalent: "\t"
-        )
-        goToStartItem.keyEquivalentModifierMask = []
-        controlsMenu.addItem(goToStartItem)
+            keyEquivalent: ""
+        ))
         controlsMenuItem.submenu = controlsMenu
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc func showPreferences(_ sender: Any?) {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController()
+        }
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 }
 

@@ -8,41 +8,22 @@ import UniformTypeIdentifiers
 /// loop consumes Tab first. Subclassing skips both problems: sendEvent runs
 /// on the main thread by definition (no Sendable closure crossing) and
 /// catches the event before any responder processing.
+/// Window subclass that intercepts every keyDown in `sendEvent`, looks the
+/// event up against KeyBindings.shared, and dispatches the matching action to
+/// the controller. The override is a regular @MainActor method, so no
+/// Sendable closure boundary to worry about. It also catches the event before
+/// AppKit's responder chain consumes special keys like Tab.
 @MainActor
 final class AudioLensWindow: NSWindow {
-    var onTabKey: (() -> Void)?
-    /// Signed seconds to seek (negative = backward), computed from the arrow
-    /// key direction and its modifiers.
-    var onSeekRelative: ((Double) -> Void)?
+    var onKeyboardAction: ((KeyboardAction) -> Void)?
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown {
-            let mods = event.modifierFlags
-            switch event.keyCode {
-            case 48:  // Tab
-                if !mods.contains(.command), !mods.contains(.option), !mods.contains(.control) {
-                    onTabKey?()
-                    return
-                }
-            case 123, 124:  // Left, Right arrows
-                let magnitude = Self.seekSeconds(for: mods)
-                let direction: Double = (event.keyCode == 123) ? -1 : 1
-                AudioLog.log("arrow seek: keyCode=\(event.keyCode) seconds=\(magnitude * direction)")
-                onSeekRelative?(magnitude * direction)
-                return
-            default:
-                break
-            }
+        if event.type == .keyDown,
+           let action = KeyBindings.shared.action(for: event) {
+            onKeyboardAction?(action)
+            return
         }
         super.sendEvent(event)
-    }
-
-    /// Step size for arrow-key seeking, per the requested modifier mapping.
-    private static func seekSeconds(for mods: NSEvent.ModifierFlags) -> Double {
-        if mods.contains(.command) { return 30 }
-        if mods.contains(.option) { return 10 }
-        if mods.contains(.control) { return 5 }
-        return 2.5
     }
 }
 
@@ -72,11 +53,24 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: window)
         window.delegate = self
-        window.onTabKey = { [weak self] in
-            self?.audioEngine.seekToStart()
+        window.onKeyboardAction = { [weak self] action in
+            self?.dispatch(action)
         }
-        window.onSeekRelative = { [weak self] seconds in
-            self?.audioEngine.seekRelative(seconds: seconds)
+    }
+
+    private func dispatch(_ action: KeyboardAction) {
+        switch action {
+        case .playPause:      audioEngine.togglePlayPause()
+        case .stop:           audioEngine.stop()
+        case .goToStart:      audioEngine.seekToStart()
+        case .seekBack2_5:    audioEngine.seekRelative(seconds: -2.5)
+        case .seekForward2_5: audioEngine.seekRelative(seconds: 2.5)
+        case .seekBack5:      audioEngine.seekRelative(seconds: -5)
+        case .seekForward5:   audioEngine.seekRelative(seconds: 5)
+        case .seekBack10:     audioEngine.seekRelative(seconds: -10)
+        case .seekForward10:  audioEngine.seekRelative(seconds: 10)
+        case .seekBack30:     audioEngine.seekRelative(seconds: -30)
+        case .seekForward30:  audioEngine.seekRelative(seconds: 30)
         }
     }
 
