@@ -294,14 +294,8 @@ final class AudioEngine {
                let loopSlice2 = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
                 loopingSlice = loopSlice2
                 player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
-                player.scheduleBuffer(loopSlice1,
-                                      at: nil,
-                                      options: [],
-                                      completionHandler: Self.loopCompletion(weakSelf: self))
-                player.scheduleBuffer(loopSlice2,
-                                      at: nil,
-                                      options: [],
-                                      completionHandler: Self.loopCompletion(weakSelf: self))
+                scheduleLoopSlice(loopSlice1)
+                scheduleLoopSlice(loopSlice2)
             } else {
                 loopingSlice = nil
                 player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: completion)
@@ -447,26 +441,18 @@ final class AudioEngine {
                                   completionHandler: completion)
         case .region(let start, let length, let loops):
             if loops {
-                // Pre-schedule two FRESH slice copies, not the same buffer
-                // reference twice — the player (or something in the
-                // pitchTime/EQ chain) seems to ignore re-scheduling the same
-                // buffer object, so without a fresh allocation the second
-                // iteration goes silent. Each completion allocates one more
-                // copy and re-schedules; the player retains queued buffers,
-                // so ARC takes care of the old ones once they're consumed.
+                // Pre-schedule two FRESH slice copies. completionCallbackType
+                // .dataPlayedBack makes the handler fire when the slice has
+                // actually finished playing (the loop boundary), not when it's
+                // merely consumed into the render pipeline.
                 guard let slice1 = Self.makeSlice(of: buffer, start: start, length: length),
                       let slice2 = Self.makeSlice(of: buffer, start: start, length: length) else {
                     return
                 }
                 loopingSlice = slice2
-                player.scheduleBuffer(slice1,
-                                      at: nil,
-                                      options: [],
-                                      completionHandler: Self.loopCompletion(weakSelf: self))
-                player.scheduleBuffer(slice2,
-                                      at: nil,
-                                      options: [],
-                                      completionHandler: Self.loopCompletion(weakSelf: self))
+                NSLog("[AudioLens] loop: pre-scheduling 2 slices, length=\(length)")
+                scheduleLoopSlice(slice1)
+                scheduleLoopSlice(slice2)
             } else {
                 guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
                 player.scheduleBuffer(slice,
@@ -477,11 +463,23 @@ final class AudioEngine {
         }
     }
 
+    /// Schedules one loop iteration. The completion (fired when the slice has
+    /// finished playing) re-fills via loopCompletion so the queue never empties.
+    private func scheduleLoopSlice(_ slice: AVAudioPCMBuffer) {
+        player.scheduleBuffer(slice,
+                              at: nil,
+                              options: [],
+                              completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor in self?.loopCompletion() }
+        }
+    }
+
     /// Allocates a fresh slice copy and schedules it whenever a previous
     /// loop iteration finishes. Reusing the same AVAudioPCMBuffer reference
     /// produced silence on the second iteration — re-allocating works around
     /// whatever (the player or downstream AU) was de-duping.
     private func loopCompletion() {
+        NSLog("[AudioLens] loopCompletion fired: state=\(state) isPlaying=\(player.isPlaying)")
         guard state == .playing,
               let source = fullBuffer,
               loopingSlice != nil,
@@ -494,18 +492,7 @@ final class AudioEngine {
             return
         }
         loopingSlice = slice
-        player.scheduleBuffer(slice,
-                              at: nil,
-                              options: [],
-                              completionHandler: Self.loopCompletion(weakSelf: self))
-    }
-
-    private static func loopCompletion(weakSelf: AudioEngine) -> @Sendable () -> Void {
-        return { [weak weakSelf] in
-            Task { @MainActor in
-                weakSelf?.loopCompletion()
-            }
-        }
+        scheduleLoopSlice(slice)
     }
 
     private func handlePlaybackEnded() {
