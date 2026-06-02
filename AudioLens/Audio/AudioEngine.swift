@@ -49,6 +49,7 @@ final class AudioEngine {
     var loopMode: Bool = false {
         didSet {
             guard oldValue != loopMode else { return }
+            AudioLog.log("loopMode didSet -> \(loopMode); selection=\(selection)")
             if case .region(let start, let length, _) = selection {
                 setSelection(.region(start: start, length: length, loops: loopMode))
             }
@@ -175,6 +176,7 @@ final class AudioEngine {
     // MARK: - Transport
 
     func play() {
+        AudioLog.log("play() entry: state=\(state) pendingSeek=\(pendingSeek) selection=\(selection)")
         guard fullBuffer != nil else { return }
         if state == .paused {
             player.play()
@@ -229,6 +231,7 @@ final class AudioEngine {
     // MARK: - Selection
 
     func setSelection(_ selection: Selection) {
+        AudioLog.log("setSelection(\(selection)) while state=\(state)")
         self.selection = selection
         scheduledStartFrame = selectionStartFrame
         pendingSeek = false
@@ -427,6 +430,7 @@ final class AudioEngine {
     }
 
     private func scheduleCurrentSelection() {
+        AudioLog.log("scheduleCurrentSelection: selection=\(selection)")
         guard let buffer = fullBuffer else { return }
         scheduledStartFrame = selectionStartFrame
         loopingSlice = nil
@@ -450,7 +454,7 @@ final class AudioEngine {
                     return
                 }
                 loopingSlice = slice2
-                NSLog("[AudioLens] loop: pre-scheduling 2 slices, length=\(length)")
+                AudioLog.log("loop: pre-scheduling 2 slices, length=\(length)")
                 scheduleLoopSlice(slice1)
                 scheduleLoopSlice(slice2)
             } else {
@@ -479,7 +483,7 @@ final class AudioEngine {
     /// produced silence on the second iteration — re-allocating works around
     /// whatever (the player or downstream AU) was de-duping.
     private func loopCompletion() {
-        NSLog("[AudioLens] loopCompletion fired: state=\(state) isPlaying=\(player.isPlaying)")
+        AudioLog.log("loopCompletion fired: state=\(state) isPlaying=\(player.isPlaying)")
         guard state == .playing,
               let source = fullBuffer,
               loopingSlice != nil,
