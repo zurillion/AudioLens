@@ -53,7 +53,8 @@ Add it through Xcode the first time you build:
 
 1. With `AudioLens.xcodeproj` open in Xcode: **File → Add Package Dependencies…**
 2. Enter the URL `https://github.com/sbooth/SFBAudioEngine`
-3. Dependency Rule: **Up to Next Major Version** from `3.0.0`
+3. Dependency Rule: **Up to Next Major Version** from the version Xcode pre-fills
+   (currently `0.12.x`)
 4. Add the `SFBAudioEngine` product to the **AudioLens** target
 
 Once added, `import SFBAudioEngine` in `Audio/SFBAudioLoader.swift` resolves and
