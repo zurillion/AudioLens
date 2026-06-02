@@ -6,6 +6,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     private let audioEngine = AudioEngine()
     private let rootViewController: MainViewController
+    private var tabKeyMonitor: Any?
 
     init() {
         rootViewController = MainViewController(audioEngine: audioEngine)
@@ -27,6 +28,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         super.init(window: window)
         window.delegate = self
+        installTabKeyMonitor()
+    }
+
+    /// Tab (keyCode 48) is consumed by AppKit's key-view focus loop before it
+    /// ever reaches a menu key equivalent, so a "\t" menu shortcut never fires.
+    /// Intercept it with a local event monitor instead. This app has no text
+    /// fields that need Tab for focus traversal, so consuming it is safe.
+    private func installTabKeyMonitor() {
+        tabKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Local key monitors are delivered on the main thread; assume the
+            // isolation so we can touch the MainActor-bound engine directly.
+            MainActor.assumeIsolated {
+                guard let self,
+                      event.window === self.window,
+                      event.keyCode == 48,
+                      !event.modifierFlags.contains(.command) else {
+                    return event
+                }
+                self.audioEngine.seekToStart()
+                return nil  // consume
+            }
+        }
     }
 
     required init?(coder: NSCoder) {
