@@ -237,17 +237,22 @@ final class AudioEngine {
 
     /// Nudge the playhead by `seconds` (negative = backward). Clamped to the
     /// active region when one is selected, otherwise to the whole file.
+    ///
+    /// We clamp one frame short of the end: seek() decides "inside region" with
+    /// `clamped < regionEnd`, so landing exactly on `regionEnd` would make it
+    /// treat the target as outside the region and clear the loop.
     func seekRelative(seconds: Double) {
         let delta = AVAudioFramePosition(seconds * sampleRate)
         let target = currentFramePosition + delta
         let lowerBound = selectionStartFrame
-        let upperBound: AVAudioFramePosition
+        let upperBoundExclusive: AVAudioFramePosition
         switch selection {
         case .whole:
-            upperBound = totalFrames
+            upperBoundExclusive = totalFrames
         case .region(let start, let length, _):
-            upperBound = start + AVAudioFramePosition(length)
+            upperBoundExclusive = start + AVAudioFramePosition(length)
         }
+        let upperBound = max(lowerBound, upperBoundExclusive - 1)
         seek(toFrame: max(lowerBound, min(upperBound, target)))
     }
 

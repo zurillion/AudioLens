@@ -174,10 +174,41 @@ final class PreferencesWindowController: NSWindowController,
 
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let shortcut = KeyShortcut(keyCode: event.keyCode, modifiers: mods)
+
+        if let conflict = conflictingAction(for: shortcut, excluding: action) {
+            statusLabel.stringValue = "\(shortcut.displayString) is already used by \"\(conflict.displayName)\"."
+            presentConflictAlert(shortcut: shortcut, existingAction: conflict)
+            finishRecording()
+            return true
+        }
+
         KeyBindings.shared.setShortcut(shortcut, for: action)
         statusLabel.stringValue = "Set \(action.displayName) → \(shortcut.displayString)"
         finishRecording()
         return true
+    }
+
+    /// Returns the first other action whose current binding matches `shortcut`,
+    /// or nil if there's no conflict.
+    private func conflictingAction(for shortcut: KeyShortcut,
+                                   excluding action: KeyboardAction) -> KeyboardAction? {
+        for candidate in KeyboardAction.allCases where candidate != action {
+            if KeyBindings.shared.shortcut(for: candidate) == shortcut {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private func presentConflictAlert(shortcut: KeyShortcut,
+                                      existingAction: KeyboardAction) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Shortcut already in use"
+        alert.informativeText = "\(shortcut.displayString) is assigned to \"\(existingAction.displayName)\". "
+            + "Choose a different shortcut, or change the existing assignment first."
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window, completionHandler: nil)
     }
 
     private func finishRecording() {
