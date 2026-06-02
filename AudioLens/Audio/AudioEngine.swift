@@ -29,6 +29,11 @@ final class AudioEngine {
     /// after a normal play(), is overridden by seek() to the seek target.
     private var scheduledStartFrame: AVAudioFramePosition = 0
 
+    /// True when seek() has scheduled a slice but the user hasn't pressed play
+    /// yet. In that state play() must NOT re-schedule (which would discard the
+    /// seek and start from the selection's beginning) — it should just resume.
+    private var pendingSeek: Bool = false
+
     /// Whether new region selections should loop. Toggling while a region is
     /// already active updates that region's loop flag immediately.
     var loopMode: Bool = false {
@@ -74,6 +79,7 @@ final class AudioEngine {
         fullBuffer = buffer
         selection = .whole
         scheduledStartFrame = 0
+        pendingSeek = false
         connectGraph(processingFormat: buffer.format)
         if !engine.isRunning {
             do {
@@ -94,6 +100,13 @@ final class AudioEngine {
             state = .playing
             return
         }
+        if pendingSeek {
+            // seek() already scheduled the slice; just start the player.
+            player.play()
+            state = .playing
+            pendingSeek = false
+            return
+        }
         scheduleCurrentSelection()
         player.play()
         state = .playing
@@ -108,6 +121,7 @@ final class AudioEngine {
     func stop() {
         player.stop()
         scheduledStartFrame = selectionStartFrame
+        pendingSeek = false
         state = sourceURL == nil ? .idle : .loaded
     }
 
@@ -128,6 +142,7 @@ final class AudioEngine {
     func setSelection(_ selection: Selection) {
         self.selection = selection
         scheduledStartFrame = selectionStartFrame
+        pendingSeek = false
         switch state {
         case .playing:
             stop()
@@ -192,8 +207,10 @@ final class AudioEngine {
         if wasPlaying {
             player.play()
             state = .playing
+            pendingSeek = false
         } else {
             state = .loaded
+            pendingSeek = true
         }
     }
 
@@ -326,7 +343,13 @@ final class AudioEngine {
     }
 
     private func handlePlaybackEnded() {
-        if state == .playing {
+        // scheduleBuffer completions arrive on the audio thread and we hop back
+        // to MainActor via Task. By that time a new seek() may have already
+        // scheduled fresh buffers and resumed the player, in which case the
+        // completion we're handling refers to the *previous* (now stale) slice
+        // — leave state alone. We only finalise state when the player has
+        // actually stopped producing audio.
+        if state == .playing && !player.isPlaying {
             state = .loaded
         }
     }
