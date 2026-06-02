@@ -287,16 +287,18 @@ final class AudioEngine {
 
         if let loop = keepLoopRegion {
             // Partial slice from seek point to region end (plays once), then
-            // the full region looped via manual re-scheduling. Pre-schedule
-            // two copies of the loop slice so the boundary is seamless.
-            if let loopSlice = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
-                loopingSlice = loopSlice
+            // the full region looped via manual re-scheduling. Two distinct
+            // fresh slice copies pre-scheduled so neither the player nor a
+            // downstream AU dedups them.
+            if let loopSlice1 = Self.makeSlice(of: buffer, start: loop.start, length: loop.length),
+               let loopSlice2 = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
+                loopingSlice = loopSlice2
                 player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
-                player.scheduleBuffer(loopSlice,
+                player.scheduleBuffer(loopSlice1,
                                       at: nil,
                                       options: [],
                                       completionHandler: Self.loopCompletion(weakSelf: self))
-                player.scheduleBuffer(loopSlice,
+                player.scheduleBuffer(loopSlice2,
                                       at: nil,
                                       options: [],
                                       completionHandler: Self.loopCompletion(weakSelf: self))
@@ -440,24 +442,29 @@ final class AudioEngine {
                                   options: [],
                                   completionHandler: completion)
         case .region(let start, let length, let loops):
-            guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
             if loops {
-                // Manual loop. The audio chain runs dry the instant the player
-                // queue empties; the completion is dispatched through the audio
-                // thread and a Task @MainActor hop, which is too slow to re-fill
-                // without an audible drop-out. Pre-schedule two copies so the
-                // queue starts at depth 2, and each completion adds one more
-                // — depth stays at ~2 and the boundary is seamless.
-                loopingSlice = slice
-                player.scheduleBuffer(slice,
+                // Pre-schedule two FRESH slice copies, not the same buffer
+                // reference twice — the player (or something in the
+                // pitchTime/EQ chain) seems to ignore re-scheduling the same
+                // buffer object, so without a fresh allocation the second
+                // iteration goes silent. Each completion allocates one more
+                // copy and re-schedules; the player retains queued buffers,
+                // so ARC takes care of the old ones once they're consumed.
+                guard let slice1 = Self.makeSlice(of: buffer, start: start, length: length),
+                      let slice2 = Self.makeSlice(of: buffer, start: start, length: length) else {
+                    return
+                }
+                loopingSlice = slice2
+                player.scheduleBuffer(slice1,
                                       at: nil,
                                       options: [],
                                       completionHandler: Self.loopCompletion(weakSelf: self))
-                player.scheduleBuffer(slice,
+                player.scheduleBuffer(slice2,
                                       at: nil,
                                       options: [],
                                       completionHandler: Self.loopCompletion(weakSelf: self))
             } else {
+                guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
                 player.scheduleBuffer(slice,
                                       at: nil,
                                       options: [],
@@ -466,13 +473,23 @@ final class AudioEngine {
         }
     }
 
-    /// Re-schedules `loopingSlice` whenever the previous iteration finishes,
-    /// as long as we're still in a playing loop and the slice hasn't changed.
+    /// Allocates a fresh slice copy and schedules it whenever a previous
+    /// loop iteration finishes. Reusing the same AVAudioPCMBuffer reference
+    /// produced silence on the second iteration — re-allocating works around
+    /// whatever (the player or downstream AU) was de-duping.
     private func loopCompletion() {
-        guard state == .playing, let slice = loopingSlice else {
+        guard state == .playing,
+              let source = fullBuffer,
+              loopingSlice != nil,
+              case .region(let start, let length, _) = selection else {
             handlePlaybackEnded()
             return
         }
+        guard let slice = Self.makeSlice(of: source, start: start, length: length) else {
+            handlePlaybackEnded()
+            return
+        }
+        loopingSlice = slice
         player.scheduleBuffer(slice,
                               at: nil,
                               options: [],
