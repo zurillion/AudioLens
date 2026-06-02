@@ -47,6 +47,7 @@ final class TransportView: NSView {
         stopButton.action = #selector(stop(_:))
         loopButton.target = self
         loopButton.action = #selector(toggleLoop(_:))
+        loopButton.state = audioEngine.loopMode ? .on : .off
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 

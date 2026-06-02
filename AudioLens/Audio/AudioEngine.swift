@@ -44,9 +44,12 @@ final class AudioEngine {
     /// just in case the player doesn't retain it across loop iterations.
     private var loopingSlice: AVAudioPCMBuffer?
 
-    /// Whether new region selections should loop. Toggling while a region is
-    /// already active updates that region's loop flag immediately.
-    var loopMode: Bool = false {
+    /// Whether new region selections should loop. Defaults to true: selecting a
+    /// region is overwhelmingly a "loop this section to practice it" action, and
+    /// a separate checkbox was too easy to miss (making selections play once and
+    /// stop, which looked like a broken loop). Toggling while a region is active
+    /// updates that region's loop flag immediately.
+    var loopMode: Bool = true {
         didSet {
             guard oldValue != loopMode else { return }
             AudioLog.log("loopMode didSet -> \(loopMode); selection=\(selection)")
