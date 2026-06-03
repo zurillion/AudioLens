@@ -49,15 +49,62 @@ final class AudioEngine {
     private var currentPitchScale: Double = 1.0
     private var currentTimeRatio: Double = 1.0
 
-    static let eqBandFrequencies: [Float] = [
-        31, 62, 125, 250, 500,
-        1_000, 2_000, 4_000, 8_000, 16_000
-    ]
+    /// The graphic EQ is created once with the maximum band count; selecting a
+    /// smaller count activates the first N bands and bypasses the rest, so we
+    /// never have to rewire the running graph.
+    static let supportedEQBandCounts = [10, 20, 30]
+    private static let maxEQBands = 30
+    private(set) var eqBandCount = 10
+    private(set) var eqFrequencies: [Float] = []
 
     init() {
-        self.eq = AVAudioUnitEQ(numberOfBands: Self.eqBandFrequencies.count)
-        configureEQ()
+        self.eq = AVAudioUnitEQ(numberOfBands: Self.maxEQBands)
+        eq.globalGain = 0
+        setEQBandCount(10)
         engine.attach(eq)
+    }
+
+    // MARK: - Graphic EQ
+
+    /// Center frequencies for an `n`-band graphic EQ, log-spaced from 31.5 Hz to
+    /// 16 kHz (≈ octave spacing at 10 bands, ≈ 1/3-octave at 30).
+    static func eqFrequencies(forBandCount n: Int) -> [Float] {
+        let low = 31.5, high = 16_000.0
+        guard n > 1 else { return [1_000] }
+        return (0..<n).map { i in
+            Float(low * pow(high / low, Double(i) / Double(n - 1)))
+        }
+    }
+
+    func setEQBandCount(_ count: Int) {
+        let n = min(Self.maxEQBands, max(1, count))
+        eqBandCount = n
+        let freqs = Self.eqFrequencies(forBandCount: n)
+        eqFrequencies = freqs
+
+        let totalOctaves = log2(16_000.0 / 31.5)
+        let bandwidth = Float(max(0.05, min(5.0, totalOctaves / Double(max(1, n - 1)))))
+
+        for i in 0..<Self.maxEQBands {
+            let band = eq.bands[i]
+            if i < n {
+                band.filterType = .parametric
+                band.frequency = freqs[i]
+                band.bandwidth = bandwidth
+                band.gain = 0
+                band.bypass = false
+            } else {
+                band.gain = 0
+                band.bypass = true
+            }
+        }
+    }
+
+    /// Flatten all active bands.
+    func resetEQ() {
+        for i in 0..<eqBandCount {
+            eq.bands[i].gain = 0
+        }
     }
 
     // MARK: - Loading
@@ -279,18 +326,6 @@ final class AudioEngine {
     }
 
     // MARK: - Graph
-
-    private func configureEQ() {
-        eq.globalGain = 0
-        for (index, freq) in Self.eqBandFrequencies.enumerated() {
-            let band = eq.bands[index]
-            band.filterType = .parametric
-            band.frequency = freq
-            band.bandwidth = 1.0
-            band.gain = 0
-            band.bypass = false
-        }
-    }
 
     /// (Re)build the source → EQ → mixer chain for a given processing format.
     /// The source node is recreated per load because its format is fixed at
