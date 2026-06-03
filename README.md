@@ -63,24 +63,26 @@ the project builds.
 ### Rubber Band Library (required for high-quality pitch / time)
 
 [Rubber Band Library](https://breakfastquay.com/rubberband/) provides the
-R3 "Finer" engine for pitch shifting and time stretching. GPL-3.0 (matches
-this project's license).
+R3 "Finer" engine for pitch shifting and time stretching. GPL-2.0-or-later
+(compatible with this project's GPL-3.0). The source is vendored as a git
+submodule and compiled in-tree by `Packages/RubberBand` — no Homebrew or
+other system install needed, and the resulting `.app` is fully
+self-contained.
 
-Setup (one-time):
+Setup (one-time, after cloning):
 
 ```bash
-brew install pkg-config rubberband
+git submodule update --init --recursive
 ```
 
 Then in Xcode: **File → Add Package Dependencies… → Add Local…**, navigate
-to `Packages/SystemRubberBand` in this repo, and add the `CRubberBand`
-product to the **AudioLens** target.
+to `Packages/RubberBand` in this repo, and add the `CRubberBand` product
+to the **AudioLens** target.
 
-The local package (`Packages/SystemRubberBand`) is a thin Swift wrapper
-around the Homebrew install of `librubberband`. `Audio/RubberBandStretcher.swift`
-imports it via `#if canImport(CRubberBand)` so the project still builds
-before the package is added — the Rubber Band wrapper just isn't compiled
-in until then.
+`Audio/RubberBandStretcher.swift` imports the C API via
+`#if canImport(CRubberBand)`, so the project still builds before the
+package is added — the Rubber Band wrapper just isn't compiled in until
+then.
 
 ## License
 

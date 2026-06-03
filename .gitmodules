@@ -1,0 +1,3 @@
+[submodule "Packages/RubberBand/rubberband"]
+	path = Packages/RubberBand/rubberband
+	url = https://github.com/breakfastquay/rubberband.git

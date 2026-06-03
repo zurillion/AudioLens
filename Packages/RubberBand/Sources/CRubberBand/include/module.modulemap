@@ -1,0 +1,4 @@
+module CRubberBand {
+    header "shim.h"
+    export *
+}

@@ -1,5 +1,0 @@
-module CRubberBand [system] {
-    header "shim.h"
-    link "rubberband"
-    export *
-}
