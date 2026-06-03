@@ -73,6 +73,11 @@ let package = Package(
                 .define("NDEBUG"),
                 .headerSearchPath("rubberband"),
                 .headerSearchPath("rubberband/src"),
+                // sysutils.h on Darwin/clang doesn't pull in <stddef.h>
+                // explicitly; the meson build gets size_t into the global
+                // namespace only via transitive inclusion that doesn't fire
+                // in every SwiftPM translation-unit order. Force it in.
+                .unsafeFlags(["-include", "stddef.h"]),
             ],
             linkerSettings: [
                 .linkedFramework("Accelerate"),
