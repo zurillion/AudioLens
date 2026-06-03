@@ -30,18 +30,17 @@ final class RubberBandAudioUnit: AUAudioUnit {
         componentFlagsMask: 0
     )
 
-    /// Call once at startup so AVAudioUnit.instantiate(with:) can find us.
-    static func registerOnce() {
-        struct Once { static var done = false }
-        guard !Once.done else { return }
-        Once.done = true
+    /// Call before instantiating via AVAudioUnit.instantiate(with:). Lazy
+    /// static initialisation guarantees the registration runs exactly once
+    /// across all callers without needing a mutable flag.
+    static let registerOnce: Void = {
         AUAudioUnit.registerSubclass(
             RubberBandAudioUnit.self,
             as: componentDescription,
             name: "AudioLens Rubber Band",
             version: 0x00010000
         )
-    }
+    }()
 
     // MARK: - State
 
