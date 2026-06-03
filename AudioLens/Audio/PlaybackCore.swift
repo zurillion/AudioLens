@@ -11,8 +11,10 @@ import os
 /// Threading: every value shared between the main thread (UI / transport) and
 /// the audio render thread is funnelled through one OSAllocatedUnfairLock. The
 /// render thread copies the control snapshot out under a tiny critical section
-/// and does all DSP outside the lock. The scratch pointer arrays and the
-/// "applied parameter" cache are touched only by the render thread.
+/// and does all DSP outside the lock. Crucially, the render thread touches NO
+/// Objective-C: the buffer's channel pointers / frame count are cached as raw
+/// values at install time (the audio IO thread has no autorelease pool, so
+/// objc_msgSend that returns autoreleased objects there can trap).
 final class PlaybackCore: @unchecked Sendable {
 
     private struct Control {
@@ -27,12 +29,17 @@ final class PlaybackCore: @unchecked Sendable {
         var resetRequest = false
         var finished = false
         var generation: UInt64 = 0
+        // Retained for liveness; never messaged from the audio thread.
         var buffer: AVAudioPCMBuffer?
         var stretcher: RubberBandStretcher?
+        // Raw channel base pointers + frame count, cached at install.
+        var src0: UnsafeMutablePointer<Float>?
+        var src1: UnsafeMutablePointer<Float>?
+        var srcFrames: AVAudioFramePosition = 0
     }
 
-    // Control holds non-Sendable references (buffer, stretcher), so we use the
-    // unchecked initializer; the lock itself provides the exclusion guarantee.
+    // Control holds non-Sendable references, so we use the unchecked lock; the
+    // lock itself provides the exclusion guarantee.
     private let lock = OSAllocatedUnfairLock(uncheckedState: Control())
 
     private let maxChannels = 2
@@ -45,10 +52,9 @@ final class PlaybackCore: @unchecked Sendable {
     private var appliedTime: Double = .nan
     private var appliedGeneration: UInt64 = .max
 
-    /// Per-process() input chunk cap and a hard loop bound, so a cold start or
-    /// an extreme rate ratio can't spin the render thread unbounded.
-    private let maxChunk = 2048
-    private let iterationLimit = 32
+    /// Hard loop bound so a cold start / extreme rate ratio can't spin the
+    /// render thread unbounded.
+    private let iterationLimit = 64
 
     init() {
         inPtrs = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: maxChannels)
@@ -65,14 +71,23 @@ final class PlaybackCore: @unchecked Sendable {
     // MARK: - Commands (main thread)
 
     /// Install a freshly decoded + primed buffer/stretcher pair. The stretcher
-    /// is assumed already primed, so we do NOT request a reset here (that would
-    /// discard the priming). A generation bump tells the render thread to
-    /// adopt the new objects and re-sync its applied-parameter cache.
+    /// is assumed already primed, so we do NOT request a reset (that would
+    /// discard the priming). Channel pointers and frame count are read here, on
+    /// the main thread, and cached as raw values for the render thread.
     func install(buffer: AVAudioPCMBuffer, stretcher: RubberBandStretcher,
                  regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition) {
+        let channelData = buffer.floatChannelData
+        let channels = Int(buffer.format.channelCount)
+        let frames = AVAudioFramePosition(buffer.frameLength)
+        let s0 = channelData?[0]
+        let s1 = channels > 1 ? channelData?[1] : channelData?[0]
+
         lock.withLockUnchecked { c in
             c.buffer = buffer
             c.stretcher = stretcher
+            c.src0 = s0
+            c.src1 = s1
+            c.srcFrames = frames
             c.regionStart = regionStart
             c.regionEnd = regionEnd
             c.cursor = regionStart
@@ -135,15 +150,18 @@ final class PlaybackCore: @unchecked Sendable {
             (c: inout Control) -> (playing: Bool, looping: Bool, pitch: Double, time: Double,
                                    regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition,
                                    cursor: AVAudioFramePosition, reset: Bool, generation: UInt64,
-                                   buffer: AVAudioPCMBuffer?, stretcher: RubberBandStretcher?) in
+                                   stretcher: RubberBandStretcher?,
+                                   src0: UnsafeMutablePointer<Float>?, src1: UnsafeMutablePointer<Float>?,
+                                   srcFrames: AVAudioFramePosition) in
             let r = c.resetRequest
             c.resetRequest = false
             return (c.playing, c.looping, c.pitchScale, c.timeRatio,
                     c.regionStart, c.regionEnd, c.cursor, r, c.generation,
-                    c.buffer, c.stretcher)
+                    c.stretcher, c.src0, c.src1, c.srcFrames)
         }
 
         let outABL = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        let outChannels = outABL.count
 
         func emitSilence() {
             for buffer in outABL {
@@ -153,9 +171,10 @@ final class PlaybackCore: @unchecked Sendable {
         }
 
         guard snap.playing,
-              let buffer = snap.buffer,
               let stretcher = snap.stretcher,
-              let srcData = buffer.floatChannelData else {
+              let src0 = snap.src0,
+              let src1 = snap.src1,
+              outChannels > 0 else {
             emitSilence()
             return noErr
         }
@@ -171,20 +190,18 @@ final class PlaybackCore: @unchecked Sendable {
         if snap.pitch != appliedPitch { stretcher.pitchScale = snap.pitch; appliedPitch = snap.pitch }
         if snap.time != appliedTime { stretcher.timeRatio = snap.time; appliedTime = snap.time }
 
-        let bufferFrames = AVAudioFramePosition(buffer.frameLength)
-        let regStart = max(0, min(bufferFrames, snap.regionStart))
-        let regEnd = max(regStart, min(bufferFrames, snap.regionEnd))
-        let srcChannels = Int(buffer.format.channelCount)
-        let outChannels = outABL.count
-        let useChannels = min(outChannels, srcChannels, maxChannels)
+        let regStart = max(0, min(snap.srcFrames, snap.regionStart))
+        let regEnd = max(regStart, min(snap.srcFrames, snap.regionEnd))
+        let useChannels = min(outChannels, maxChannels)
+        let channelBases = (src0, src1)
 
         var cursor = max(regStart, min(regEnd, snap.cursor))
         let frameCountInt = Int(frameCount)
-        var reachedEnd = false
+        var inputExhausted = false
         var iterations = 0
 
-        // Feed input until the stretcher can yield a full output slice (or we
-        // hit the loop point / end of the non-looping region).
+        // Feed input until the stretcher can yield a full output slice, looping
+        // at the region end or stopping at the end of a non-looping region.
         while stretcher.available < frameCountInt && iterations < iterationLimit {
             iterations += 1
             var framesUntilEnd = regEnd - cursor
@@ -194,24 +211,22 @@ final class PlaybackCore: @unchecked Sendable {
                     framesUntilEnd = regEnd - regStart
                     if framesUntilEnd <= 0 { break }   // empty region guard
                 } else {
-                    for ch in 0..<useChannels { inPtrs[ch] = UnsafePointer(srcData[ch]) }
-                    stretcher.process(input: UnsafePointer(inPtrs), sampleCount: 0, final: true)
-                    reachedEnd = true
+                    inputExhausted = true
                     break
                 }
             }
             let want = stretcher.samplesRequired
             if want <= 0 { break }
-            let chunk = min(want, Int(framesUntilEnd), maxChunk)
-            for ch in 0..<useChannels {
-                inPtrs[ch] = UnsafePointer(srcData[ch].advanced(by: Int(cursor)))
-            }
+            let chunk = min(want, Int(framesUntilEnd))
+            if chunk <= 0 { break }
+            inPtrs[0] = UnsafePointer(channelBases.0.advanced(by: Int(cursor)))
+            inPtrs[1] = UnsafePointer(channelBases.1.advanced(by: Int(cursor)))
             stretcher.process(input: UnsafePointer(inPtrs), sampleCount: chunk, final: false)
             cursor += AVAudioFramePosition(chunk)
         }
 
-        // Map output channel pointers and pull. Never ask Rubber Band for more
-        // than it has available, or its internal RingBuffer logs an over-read.
+        // Map output channel pointers and pull. Never request more than
+        // available, or Rubber Band's internal RingBuffer logs an over-read.
         for ch in 0..<useChannels {
             outPtrs[ch] = outABL[ch].mData?.assumingMemoryBound(to: Float.self)
         }
@@ -220,6 +235,8 @@ final class PlaybackCore: @unchecked Sendable {
         if toRetrieve > 0 {
             written = stretcher.retrieve(output: UnsafePointer(outPtrs), sampleCount: toRetrieve)
         }
+        written = max(0, min(written, frameCountInt))
+
         if written < frameCountInt {
             for ch in 0..<useChannels {
                 if let p = outPtrs[ch] {
@@ -227,14 +244,17 @@ final class PlaybackCore: @unchecked Sendable {
                 }
             }
         }
-        // Zero any output channels we didn't fill (e.g. mono source into a
-        // stereo bus would only fill what useChannels covers).
+        // Zero any output channels we didn't fill.
         if outChannels > useChannels {
             for ch in useChannels..<outChannels {
                 if let data = outABL[ch].mData { memset(data, 0, Int(outABL[ch].mDataByteSize)) }
             }
         }
         isSilence.pointee = false
+
+        // We reached the natural end once input is exhausted and the stretcher
+        // has no buffered output left to drain.
+        let reachedEnd = inputExhausted && stretcher.available <= 0
 
         lock.withLockUnchecked { c in
             // Only publish if no install/seek happened while we were rendering.
