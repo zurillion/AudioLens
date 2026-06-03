@@ -60,6 +60,26 @@ final class RubberBandStretcher {
         rubberband_reset(state)
     }
 
+    // MARK: - Latency
+
+    /// Number of output samples to discard at the start of the stream to
+    /// account for the engine's startup transient. Used to compensate
+    /// latency end-to-end.
+    var startDelay: Int {
+        Int(rubberband_get_start_delay(state))
+    }
+
+    /// Steady-state latency of the stretcher in samples.
+    var latency: Int {
+        Int(rubberband_get_latency(state))
+    }
+
+    /// Number of samples of silence that should be processed at the start of
+    /// playback to "prime" the stretcher.
+    var preferredStartPad: Int {
+        Int(rubberband_get_preferred_start_pad(state))
+    }
+
     // MARK: - Real-time processing
 
     /// How many input frames the stretcher needs right now to produce some
