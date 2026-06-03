@@ -15,11 +15,16 @@ final class RubberBandStretcher {
 
     init(sampleRate: Double, channels: Int) {
         self.channelCount = channels
-        // The C typedef RubberBandOptions is `int` (Int32), but Swift imports
-        // the underlying enum's RawValue as UInt32. Bit-pattern conversion
-        // bridges them without overflow even if a future option uses the
-        // high bit.
-        let optionsBits = RubberBandOptionEngineFiner.rawValue |
+        // R2 (Faster) engine in real-time mode. R3 (Finer) sounds even better
+        // but is much more CPU-heavy and was blowing AVAudioEngine's render
+        // deadline (HALC "skipping cycle due to overload" → buzzing audio).
+        // R2 is still a serious phase vocoder and a clear step up from
+        // AVAudioUnitTimePitch; we can revisit R3 once we have lower-overhead
+        // scheduling (e.g. a dedicated audio thread feeding a ring buffer).
+        //
+        // The C typedef RubberBandOptions is `int` (Int32) but Swift imports
+        // the enum's RawValue as UInt32; bit-pattern conversion bridges them.
+        let optionsBits = RubberBandOptionEngineFaster.rawValue |
                           RubberBandOptionProcessRealTime.rawValue
         self.state = rubberband_new(
             UInt32(sampleRate),

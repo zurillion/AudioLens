@@ -271,9 +271,22 @@ final class RubberBandAudioUnit: AUAudioUnit {
             // local copy of the output timestamp each iteration so upstream
             // nodes that key off mSampleTime see a continuous progression
             // across multiple pulls within the same render quantum.
+            //
+            // A hard iteration cap stops a pathological case where samplesRequired
+            // stays at 0 but available never reaches frameCount, which would
+            // otherwise spin the audio thread.
             var pullTimestamp = timestamp.pointee
-            while stretcher.available < Int(frameCount) {
-                let needed = max(1, stretcher.samplesRequired)
+            var pumpIterations = 0
+            let pumpIterationLimit = 16
+            while stretcher.available < Int(frameCount) && pumpIterations < pumpIterationLimit {
+                pumpIterations += 1
+                let needed = stretcher.samplesRequired
+                if needed <= 0 {
+                    // Stretcher isn't asking for more input but still hasn't
+                    // produced enough output this slice; further pumping won't
+                    // help — fall through and zero-fill the tail below.
+                    break
+                }
                 let pullFrames = AUAudioFrameCount(min(needed, Int(self.maxPullFrames)))
 
                 // Reset the scratch ABL for this pull.
