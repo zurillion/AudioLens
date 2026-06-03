@@ -30,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    /// Files dropped on the Dock icon (or opened via the Finder "Open With").
+    /// We're a single-window player, so open the last URL.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.last else { return }
+        mainWindowController?.openURL(url)
+    }
+
     private func installMainMenu() {
         let mainMenu = NSMenu()
 

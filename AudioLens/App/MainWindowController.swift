@@ -56,6 +56,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.onKeyboardAction = { [weak self] action in
             self?.dispatch(action)
         }
+        rootViewController.onOpenFile = { [weak self] url in
+            self?.openURL(url)
+        }
     }
 
     private func dispatch(_ action: KeyboardAction) {
@@ -89,18 +92,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
             let response = await panel.beginSheetModal(for: window)
             guard response == .OK, let url = panel.url else { return }
-            await load(url: url)
+            openURL(url)
         }
     }
 
     @objc func openRecentFile(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
+        openURL(url)
+    }
+
+    /// Single entry point for opening a file from any source — Open panel,
+    /// Open Recent, a window drop, or a Dock drop. Wraps the load in
+    /// security-scoped access so sandboxed reopen / recent / drop URLs resolve.
+    func openURL(_ url: URL) {
         Task {
-            // Bookmarks resolved by NSDocumentController are session-valid,
-            // but we still ask for security-scoped access in case the URL
-            // came from a different scope.
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             await load(url: url)
         }
     }

@@ -10,6 +10,10 @@ final class MainViewController: NSViewController {
     private let pitchTimeView: PitchTimeView
     private var playheadTimer: Timer?
 
+    /// Set by the window controller; invoked when a file is dropped on the
+    /// window.
+    var onOpenFile: ((URL) -> Void)?
+
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
         self.waveformView = WaveformView()
@@ -24,9 +28,10 @@ final class MainViewController: NSViewController {
     }
 
     override func loadView() {
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720))
+        let root = FileDropView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720))
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        root.onDrop = { [weak self] url in self?.onOpenFile?(url) }
 
         let waveContainer = waveformView
         let transport = transportView
