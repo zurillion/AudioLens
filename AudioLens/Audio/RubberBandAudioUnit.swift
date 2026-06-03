@@ -266,59 +266,41 @@ final class RubberBandAudioUnit: AUAudioUnit {
                 self.appliedTimeRatio = r
             }
 
-            // Pump the stretcher until it has enough output, pulling more
-            // input from upstream as Rubber Band asks for it. We advance a
-            // local copy of the output timestamp each iteration so upstream
-            // nodes that key off mSampleTime see a continuous progression
-            // across multiple pulls within the same render quantum.
-            //
-            // A hard iteration cap stops a pathological case where samplesRequired
-            // stays at 0 but available never reaches frameCount, which would
-            // otherwise spin the audio thread.
-            var pullTimestamp = timestamp.pointee
-            var pumpIterations = 0
-            let pumpIterationLimit = 16
-            while stretcher.available < Int(frameCount) && pumpIterations < pumpIterationLimit {
-                pumpIterations += 1
-                let needed = stretcher.samplesRequired
-                if needed <= 0 {
-                    // Stretcher isn't asking for more input but still hasn't
-                    // produced enough output this slice; further pumping won't
-                    // help — fall through and zero-fill the tail below.
-                    break
-                }
-                let pullFrames = AUAudioFrameCount(min(needed, Int(self.maxPullFrames)))
-
-                // Reset the scratch ABL for this pull.
-                for ch in 0..<channelCount {
-                    inputABL[ch].mDataByteSize =
-                        UInt32(pullFrames) * UInt32(MemoryLayout<Float>.size)
-                }
-                var pullFlags = AudioUnitRenderActionFlags(rawValue: 0)
-                let pullStatus = withUnsafePointer(to: &pullTimestamp) { tsPtr in
-                    pullInput(
-                        &pullFlags,
-                        tsPtr,
-                        pullFrames,
-                        0,
-                        inputABL.unsafeMutablePointer
-                    )
-                }
-                if pullStatus != noErr { return pullStatus }
-                pullTimestamp.mSampleTime += Float64(pullFrames)
-
-                // Hand per-channel pointers to Rubber Band.
-                for ch in 0..<channelCount {
-                    if let raw = inputABL[ch].mData {
-                        inputCPtrs[ch] = UnsafePointer(raw.assumingMemoryBound(to: Float.self))
-                    } else {
-                        inputCPtrs[ch] = nil
-                    }
-                }
-                stretcher.process(input: inputCPtrs,
-                                  sampleCount: Int(pullFrames),
-                                  final: false)
+            // Single pull per render slice. AVAudioPlayerNode (and engine
+            // node scheduling in general) expects exactly one pullInputBlock
+            // call per slice; calling it multiple times confuses upstream
+            // book-keeping and causes the HALC "out of order message" cascade
+            // we were seeing along with audible distortion. We pull
+            // frameCount frames — the natural 1:1 amount — and let Rubber
+            // Band's internal buffering absorb modest rate-change asymmetry.
+            // Extreme rate ratios will need a different architecture
+            // (custom AVAudioSourceNode that reads from the decoded buffer
+            // directly), planned as a follow-up.
+            let pullFrames = frameCount
+            for ch in 0..<channelCount {
+                inputABL[ch].mDataByteSize =
+                    UInt32(pullFrames) * UInt32(MemoryLayout<Float>.size)
             }
+            var pullFlags = AudioUnitRenderActionFlags(rawValue: 0)
+            let pullStatus = pullInput(
+                &pullFlags,
+                timestamp,
+                pullFrames,
+                0,
+                inputABL.unsafeMutablePointer
+            )
+            if pullStatus != noErr { return pullStatus }
+
+            for ch in 0..<channelCount {
+                if let raw = inputABL[ch].mData {
+                    inputCPtrs[ch] = UnsafePointer(raw.assumingMemoryBound(to: Float.self))
+                } else {
+                    inputCPtrs[ch] = nil
+                }
+            }
+            stretcher.process(input: inputCPtrs,
+                              sampleCount: Int(pullFrames),
+                              final: false)
 
             // Map output ABL to per-channel pointers and pull from Rubber Band.
             let outABL = UnsafeMutableAudioBufferListPointer(outputData)
