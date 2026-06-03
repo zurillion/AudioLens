@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import UniformTypeIdentifiers
 
 /// Window subclass that intercepts plain Tab in `sendEvent` and forwards it
