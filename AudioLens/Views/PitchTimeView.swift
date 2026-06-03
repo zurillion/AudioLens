@@ -13,6 +13,7 @@ final class PitchTimeView: NSView {
     private let centLabel = NSTextField(labelWithString: "0.0 cents")
     private let rateSlider = NSSlider(value: 1.0, minValue: 0.25, maxValue: 4.0, target: nil, action: nil)
     private let rateLabel = NSTextField(labelWithString: "1.00×")
+    private let resetButton = NSButton(title: "Reset", target: nil, action: nil)
 
     /// Reference frequency we measure the tuning against (A4).
     private static let referenceHz: Double = 440.0
@@ -55,6 +56,11 @@ final class PitchTimeView: NSView {
         rateSlider.action = #selector(rateChanged(_:))
         rateSlider.isContinuous = true
 
+        resetButton.target = self
+        resetButton.action = #selector(resetPitchAndRate(_:))
+        resetButton.bezelStyle = .rounded
+        resetButton.toolTip = "Restore tuning to 440 Hz, pitch to 0, and rate to 1.00×."
+
         for label in [tuningLabel, semitoneLabel, centLabel, rateLabel] {
             label.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         }
@@ -62,7 +68,7 @@ final class PitchTimeView: NSView {
         let tuningRow = labeledRow(title: "Tuning (A4)", controls: [tuningStepper, tuningLabel])
         let semitoneRow = labeledRow(title: "Semitones", controls: [semitoneStepper, semitoneLabel])
         let centRow = labeledRow(title: "Cents", controls: [centSlider, centLabel])
-        let rateRow = labeledRow(title: "Rate", controls: [rateSlider, rateLabel])
+        let rateRow = labeledRow(title: "Rate", controls: [rateSlider, rateLabel, resetButton])
 
         let stack = NSStackView(views: [tuningRow, semitoneRow, centRow, rateRow])
         stack.orientation = .vertical
@@ -118,6 +124,22 @@ final class PitchTimeView: NSView {
         let rate = sender.doubleValue
         rateLabel.stringValue = String(format: "%.2f×", rate)
         audioEngine.rate = Float(rate)
+    }
+
+    @objc private func resetPitchAndRate(_ sender: NSButton) {
+        // Push the engine first, then bring every control back to its
+        // default display state.
+        audioEngine.pitchCents = 0
+        audioEngine.rate = 1.0
+
+        tuningStepper.doubleValue = Self.referenceHz
+        tuningLabel.stringValue = String(format: "%.2f Hz", Self.referenceHz)
+        semitoneStepper.integerValue = 0
+        semitoneLabel.stringValue = "0 st"
+        centSlider.doubleValue = 0
+        centLabel.stringValue = "0.0 cents"
+        rateSlider.doubleValue = 1.0
+        rateLabel.stringValue = "1.00×"
     }
 
     // MARK: - Synchronisation
