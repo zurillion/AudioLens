@@ -17,12 +17,14 @@ final class RubberBandStretcher {
 
     init(sampleRate: Double, channels: Int) {
         self.channelCount = channels
-        let options: Int32 = Int32(RubberBandOptionEngineFiner.rawValue) |
-                             Int32(RubberBandOptionProcessRealTime.rawValue)
+        // RubberBandOptions is a typedef'd Int32 (not UInt32). The enum cases
+        // imported from <rubberband-c.h> already have RawValue == Int32.
+        let options = RubberBandOptionEngineFiner.rawValue |
+                      RubberBandOptionProcessRealTime.rawValue
         self.state = rubberband_new(
             UInt32(sampleRate),
             UInt32(channels),
-            UInt32(options),
+            options,
             1.0,   // initial time ratio (1.0 = unchanged speed)
             1.0    // initial pitch scale (1.0 = unchanged pitch)
         )
