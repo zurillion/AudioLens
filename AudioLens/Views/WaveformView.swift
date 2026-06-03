@@ -1,15 +1,31 @@
 import AppKit
 import AVFoundation
 
+/// Wraps a non-Sendable buffer so it can cross into a detached task. The buffer
+/// is only read (here and on the audio thread); nothing mutates it.
+private struct BufferBox: @unchecked Sendable {
+    let buffer: AVAudioPCMBuffer
+}
+
 /// Renders the loaded audio buffer with an interactive region selection and a
-/// live playhead. A horizontal drag defines a region (translucent overlay); a
-/// click without measurable drag emits a seek to that point.
+/// live playhead. The min/max overview is computed off the main thread in
+/// slices and shown progressively (the waveform fills left to right as it's
+/// built), and cached on disk so reopening a file is instant.
 @MainActor
 final class WaveformView: NSView {
 
-    private var samplesMin: [Float] = []
-    private var samplesMax: [Float] = []
+    /// Fixed overview resolution. Independent of the view width so it survives
+    /// resizes and can be cached/reused; the draw step downsamples to pixels.
+    private static let maxBuckets = 16_384
+
+    private var mins: [Float] = []
+    private var maxs: [Float] = []
+    private var bucketCount = 0
+    private var validBuckets = 0
     private var totalFrames: AVAudioFramePosition = 0
+
+    private var loadTask: Task<Void, Never>?
+    private var overviewGeneration = 0
 
     var selection: Selection = .whole {
         didSet { needsDisplay = true }
@@ -52,16 +68,54 @@ final class WaveformView: NSView {
 
     override var acceptsFirstResponder: Bool { true }
 
-    func setBuffer(_ buffer: AVAudioPCMBuffer) {
+    // MARK: - Loading the overview
+
+    func setBuffer(_ buffer: AVAudioPCMBuffer, url: URL?) {
+        loadTask?.cancel()
+        overviewGeneration &+= 1
+        let generation = overviewGeneration
+
         totalFrames = AVAudioFramePosition(buffer.frameLength)
-        let bucketCount = max(64, Int(bounds.width))
-        let (mins, maxs) = Self.computeOverview(buffer: buffer, buckets: bucketCount)
-        self.samplesMin = mins
-        self.samplesMax = maxs
+        mins = []
+        maxs = []
+        bucketCount = 0
+        validBuckets = 0
         playheadFrame = 0
         selection = .whole
         dragStartPixel = nil
         dragCurrentPixel = nil
+        needsDisplay = true
+
+        let box = BufferBox(buffer: buffer)
+        loadTask = Task.detached(priority: .utility) { [weak self] in
+            // Cache hit: load and display immediately.
+            if let url, let cached = WaveformCache.load(for: url) {
+                await self?.apply(generation: generation,
+                                  mins: cached.mins, maxs: cached.maxs,
+                                  valid: cached.mins.count, total: cached.mins.count)
+                return
+            }
+
+            // Otherwise compute progressively, then persist.
+            let result = Self.computeOverview(buffer: box.buffer) { partialMins, partialMaxs, valid, total in
+                Task { @MainActor in
+                    self?.apply(generation: generation,
+                                mins: partialMins, maxs: partialMaxs, valid: valid, total: total)
+                }
+            }
+            if Task.isCancelled { return }
+            if let result, let url {
+                WaveformCache.save(mins: result.mins, maxs: result.maxs, for: url)
+            }
+        }
+    }
+
+    private func apply(generation: Int, mins: [Float], maxs: [Float], valid: Int, total: Int) {
+        guard generation == overviewGeneration else { return }   // stale compute
+        self.mins = mins
+        self.maxs = maxs
+        self.validBuckets = valid
+        self.bucketCount = total
         needsDisplay = true
     }
 
@@ -93,7 +147,6 @@ final class WaveformView: NSView {
         }
         let pixelDistance = abs(endPx - startPx)
         if pixelDistance < clickDragThreshold {
-            // Click — emit a seek.
             onSeek?(pixelToFrame(startPx))
         } else {
             let loPx = min(startPx, endPx)
@@ -109,9 +162,6 @@ final class WaveformView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
-        // Draw the waveform first, then the selection overlay on top of it.
-        // The translucent yellow tints the audio inside the loop, making it
-        // visually distinct from the un-selected region.
         drawWaveform(ctx)
 
         if let (lo, hi) = activeSelectionRange() {
@@ -132,26 +182,41 @@ final class WaveformView: NSView {
         }
     }
 
+    /// Draws one vertical min/max line per pixel column, downsampling the
+    /// fixed-resolution overview to the view width. Only the buckets computed
+    /// so far (`validBuckets`) are drawn, so the waveform appears progressively.
     private func drawWaveform(_ ctx: CGContext) {
-        guard !samplesMax.isEmpty else { return }
+        guard bucketCount > 0, validBuckets > 0 else { return }
         let mid = bounds.midY
         let halfHeight = bounds.height / 2 - 6
+        let width = bounds.width
+        guard width >= 1 else { return }
+
         ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
         ctx.setLineWidth(1)
-        let width = bounds.width
-        let count = samplesMax.count
-        for i in 0..<count {
-            let x = width * CGFloat(i) / CGFloat(count)
-            let top = mid - CGFloat(samplesMax[i]) * halfHeight
-            let bottom = mid - CGFloat(samplesMin[i]) * halfHeight
+
+        let columns = Int(width)
+        for px in 0..<columns {
+            // Bucket range covered by this pixel column.
+            let b0 = bucketCount * px / columns
+            let b1 = max(b0 + 1, bucketCount * (px + 1) / columns)
+            if b0 >= validBuckets { break }   // not computed yet
+            let end = min(b1, validBuckets)
+            var lo: Float = 0
+            var hi: Float = 0
+            for b in b0..<end {
+                if mins[b] < lo { lo = mins[b] }
+                if maxs[b] > hi { hi = maxs[b] }
+            }
+            let x = CGFloat(px) + 0.5
+            let top = mid - CGFloat(hi) * halfHeight
+            let bottom = mid - CGFloat(lo) * halfHeight
             ctx.move(to: CGPoint(x: x, y: top))
             ctx.addLine(to: CGPoint(x: x, y: bottom))
         }
         ctx.strokePath()
     }
 
-    /// Returns the (lo, hi) frame range to highlight: the live drag if it
-    /// already exceeds the click threshold, otherwise the committed selection.
     private func activeSelectionRange() -> (AVAudioFramePosition, AVAudioFramePosition)? {
         if let s = dragStartPixel, let e = dragCurrentPixel,
            abs(e - s) >= clickDragThreshold {
@@ -181,33 +246,50 @@ final class WaveformView: NSView {
         return bounds.width * CGFloat(Double(clamped) / Double(totalFrames))
     }
 
-    // MARK: - Overview
+    // MARK: - Overview computation (off-main)
 
-    private static func computeOverview(buffer: AVAudioPCMBuffer, buckets: Int) -> ([Float], [Float]) {
+    /// Computes the min/max overview in slices, invoking `onProgress` after each
+    /// slice with the arrays-so-far. Returns the final overview, or nil if
+    /// cancelled / empty. Runs on a detached task — must not touch the view.
+    nonisolated private static func computeOverview(
+        buffer: AVAudioPCMBuffer,
+        onProgress: ([Float], [Float], Int, Int) -> Void
+    ) -> (mins: [Float], maxs: [Float])? {
         let totalFrames = Int(buffer.frameLength)
-        guard totalFrames > 0, buckets > 0,
-              let channelData = buffer.floatChannelData else {
-            return ([], [])
-        }
-        let framesPerBucket = max(1, totalFrames / buckets)
+        guard totalFrames > 0, let channelData = buffer.floatChannelData else { return nil }
+
+        let bucketCount = min(totalFrames, maxBuckets)
+        guard bucketCount > 0 else { return nil }
         let channels = Int(buffer.format.channelCount)
-        var mins = [Float](repeating: 0, count: buckets)
-        var maxs = [Float](repeating: 0, count: buckets)
-        for bucket in 0..<buckets {
-            let start = bucket * framesPerBucket
-            let end = min(totalFrames, start + framesPerBucket)
-            var lo: Float = 0
-            var hi: Float = 0
-            for ch in 0..<channels {
-                let ptr = channelData[ch]
-                for i in start..<end {
-                    let v = ptr[i]
-                    if v < lo { lo = v }
-                    if v > hi { hi = v }
+        let framesPerBucket = Double(totalFrames) / Double(bucketCount)
+
+        var mins = [Float](repeating: 0, count: bucketCount)
+        var maxs = [Float](repeating: 0, count: bucketCount)
+
+        let sliceCount = 48
+        for slice in 0..<sliceCount {
+            if Task.isCancelled { return nil }
+            let bStart = bucketCount * slice / sliceCount
+            let bEnd = bucketCount * (slice + 1) / sliceCount
+            for b in bStart..<bEnd {
+                let f0 = Int(Double(b) * framesPerBucket)
+                let f1 = (b == bucketCount - 1) ? totalFrames : Int(Double(b + 1) * framesPerBucket)
+                var lo: Float = 0
+                var hi: Float = 0
+                for ch in 0..<channels {
+                    let ptr = channelData[ch]
+                    var i = f0
+                    while i < f1 {
+                        let v = ptr[i]
+                        if v < lo { lo = v }
+                        if v > hi { hi = v }
+                        i += 1
+                    }
                 }
+                mins[b] = lo
+                maxs[b] = hi
             }
-            mins[bucket] = lo
-            maxs[bucket] = hi
+            onProgress(mins, maxs, bEnd, bucketCount)
         }
         return (mins, maxs)
     }

@@ -115,7 +115,7 @@ final class MainViewController: NSViewController {
 
     func didLoadAudio() {
         if let buffer = audioEngine.fullBuffer {
-            waveformView.setBuffer(buffer)
+            waveformView.setBuffer(buffer, url: audioEngine.sourceURL)
         }
         transportView.refresh()
     }
