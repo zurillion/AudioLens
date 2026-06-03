@@ -60,10 +60,27 @@ Add it through Xcode the first time you build:
 Once added, `import SFBAudioEngine` in `Audio/SFBAudioLoader.swift` resolves and
 the project builds.
 
-### Rubber Band Library (planned)
+### Rubber Band Library (required for high-quality pitch / time)
 
-High-quality pitch shifting and time stretching. Will be vendored as a git
-submodule and wrapped in a custom `AUAudioUnit`. GPL-3.0.
+[Rubber Band Library](https://breakfastquay.com/rubberband/) provides the
+R3 "Finer" engine for pitch shifting and time stretching. GPL-3.0 (matches
+this project's license).
+
+Setup (one-time):
+
+```bash
+brew install pkg-config rubberband
+```
+
+Then in Xcode: **File → Add Package Dependencies… → Add Local…**, navigate
+to `Packages/SystemRubberBand` in this repo, and add the `CRubberBand`
+product to the **AudioLens** target.
+
+The local package (`Packages/SystemRubberBand`) is a thin Swift wrapper
+around the Homebrew install of `librubberband`. `Audio/RubberBandStretcher.swift`
+imports it via `#if canImport(CRubberBand)` so the project still builds
+before the package is added — the Rubber Band wrapper just isn't compiled
+in until then.
 
 ## License
 
