@@ -16,7 +16,8 @@ final class WaveformView: NSView {
 
     /// Fixed overview resolution. Independent of the view width so it survives
     /// resizes and can be cached/reused; the draw step downsamples to pixels.
-    private static let maxBuckets = 16_384
+    /// `nonisolated` so the off-main overview computation can read it.
+    nonisolated private static let maxBuckets = 16_384
 
     private var mins: [Float] = []
     private var maxs: [Float] = []
