@@ -8,14 +8,6 @@ import SFBAudioEngine
 /// SFBAudioEngine sits on top of FLAC, libopus, libvorbis, libmpg123, libwavpack,
 /// libmpc, MAC (Monkey's Audio), Shorten, True Audio, libsndfile, plus everything
 /// Core Audio handles natively.
-///
-/// Why a streaming AVAudioConverter rather than chunked-then-converted:
-/// AVAudioConverter is stateful (resampling carries filter history). Telling it
-/// `.endOfStream` after each chunk would make subsequent convert() calls
-/// produce nothing — leading to one or two seconds of audio followed by
-/// silence. Instead, the converter is invoked repeatedly with a single input
-/// block that lazily pulls source chunks from the SFB decoder, only signalling
-/// endOfStream when the decoder is truly exhausted.
 enum SFBAudioLoader {
 
     enum LoadError: Error, LocalizedError {
@@ -52,10 +44,56 @@ enum SFBAudioLoader {
             throw LoadError.converterCreationFailed
         }
 
-        // Streaming input state shared across input-block invocations. The
-        // converter calls the block until it has filled its output buffer or
-        // the block returns endOfStream. Holding the current chunk keeps it
-        // alive for the converter to read from.
+        let inputBlock = makeInputBlock(decoder: decoder, sourceFormat: sourceFormat)
+
+        // Preferred path: if we can estimate the output length up front (true
+        // for WAV/AIFF/MP3/AAC/ALAC/FLAC via AVAudioFile's header), allocate ONE
+        // output buffer and let a single convert() call fill it. Peak memory is
+        // 1× the decoded size. The old chunk-accumulate path held every chunk
+        // AND the final buffer simultaneously (2× peak), which OOM-killed the
+        // app on large WAVs.
+        if let capacity = estimatedTargetFrameCapacity(url: url, targetRate: targetRate) {
+            if let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) {
+                output.frameLength = 0
+                var error: NSError?
+                let status = converter.convert(to: output, error: &error, withInputFrom: inputBlock)
+                if status != .error, output.frameLength > 0 {
+                    return output
+                }
+                // .haveData (under-estimated) or .error → fall through to the
+                // robust accumulation path with a fresh decoder/converter.
+            }
+        }
+
+        return try decodeByAccumulation(url: url, targetFormat: targetFormat)
+    }
+
+    // MARK: - Length estimate
+
+    /// Estimate the number of target-rate frames using AVAudioFile's O(1) header
+    /// read, scaled by the resample ratio, plus a safety margin. Returns nil for
+    /// formats AVAudioFile can't open (we then fall back to chunk accumulation).
+    private static func estimatedTargetFrameCapacity(url: URL, targetRate: Double) -> AVAudioFrameCount? {
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        let sourceRate = file.processingFormat.sampleRate
+        let sourceFrames = file.length
+        guard sourceFrames > 0, sourceRate > 0 else { return nil }
+        // Scale to target rate, then pad 2% + 2 seconds so a single convert()
+        // call won't run out of room (which would truncate the tail).
+        let scaled = Double(sourceFrames) * targetRate / sourceRate
+        let padded = scaled * 1.02 + targetRate * 2
+        guard padded > 0, padded < Double(AVAudioFrameCount.max) else { return nil }
+        return AVAudioFrameCount(padded)
+    }
+
+    // MARK: - Streaming input
+
+    /// Builds the AVAudioConverter input block that lazily pulls source chunks
+    /// from the SFB decoder. The converter is stateful (resampling carries
+    /// filter history), so a single input stream is used across all convert()
+    /// calls, signalling endOfStream only when the decoder is exhausted.
+    private static func makeInputBlock(decoder: AudioDecoder,
+                                       sourceFormat: AVAudioFormat) -> AVAudioConverterInputBlock {
         final class Stream: @unchecked Sendable {
             let decoder: AudioDecoder
             let sourceFormat: AVAudioFormat
@@ -67,7 +105,7 @@ enum SFBAudioLoader {
             }
         }
         let stream = Stream(decoder: decoder, sourceFormat: sourceFormat)
-        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+        return { _, outStatus in
             if stream.exhausted {
                 outStatus.pointee = .endOfStream
                 return nil
@@ -94,6 +132,23 @@ enum SFBAudioLoader {
             outStatus.pointee = .haveData
             return chunk
         }
+    }
+
+    // MARK: - Fallback path (unknown length)
+
+    /// Chunk-accumulate decode for formats whose length we can't estimate.
+    /// Holds the converted chunks then concatenates (2× peak), so it's reserved
+    /// for the fallback case — typically smaller/compressed exotic formats.
+    private static func decodeByAccumulation(url: URL,
+                                             targetFormat: AVAudioFormat) throws -> AVAudioPCMBuffer {
+        let decoder = try AudioDecoder(url: url)
+        try decoder.open()
+        defer { try? decoder.close() }
+        let sourceFormat = decoder.processingFormat
+        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
+            throw LoadError.converterCreationFailed
+        }
+        let inputBlock = makeInputBlock(decoder: decoder, sourceFormat: sourceFormat)
 
         var convertedChunks: [AVAudioPCMBuffer] = []
         while true {
