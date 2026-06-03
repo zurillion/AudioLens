@@ -16,6 +16,12 @@ import PackageDescription
 //   USE_BQRESAMPLER      Cannam's portable resampler (the built-in default)
 //   NO_THREAD_CHECKS,    quiet the diagnostic instrumentation
 //   NO_TIMING, NDEBUG
+//
+// Source files are listed explicitly (rather than as directories) to match
+// upstream meson.build's `library_sources` exactly. Directory-based source
+// inclusion picked up stale .cpp files that are no longer part of the
+// library build (e.g. VectorOpsComplex.cpp, which still references a renamed
+// `system/` directory).
 
 let package = Package(
     name: "RubberBand",
@@ -27,10 +33,7 @@ let package = Package(
             name: "CRubberBand",
             path: ".",
             exclude: [
-                // Things alongside Package.swift / submodule that SwiftPM
-                // would otherwise complain about as "unhandled".
-                "README.md",
-                // Plugin formats and unrelated bindings we don't compile.
+                // Plugin formats / unrelated bindings / non-library subdirs.
                 "rubberband/com",
                 "rubberband/cross",
                 "rubberband/dotnet",
@@ -39,7 +42,6 @@ let package = Package(
                 "rubberband/otherbuilds",
                 "rubberband/single",
                 "rubberband/vamp",
-                // Internal subdirs of src/ we don't need.
                 "rubberband/src/ext",
                 "rubberband/src/jni",
                 "rubberband/src/test",
@@ -55,12 +57,30 @@ let package = Package(
                 "rubberband/rubberband.pc.in",
             ],
             sources: [
+                // Match upstream meson.build `library_sources` exactly.
                 "rubberband/src/rubberband-c.cpp",
                 "rubberband/src/RubberBandStretcher.cpp",
                 "rubberband/src/RubberBandLiveShifter.cpp",
-                "rubberband/src/faster",
-                "rubberband/src/common",
-                "rubberband/src/finer",
+                "rubberband/src/faster/AudioCurveCalculator.cpp",
+                "rubberband/src/faster/CompoundAudioCurve.cpp",
+                "rubberband/src/faster/HighFrequencyAudioCurve.cpp",
+                "rubberband/src/faster/SilentAudioCurve.cpp",
+                "rubberband/src/faster/PercussiveAudioCurve.cpp",
+                "rubberband/src/faster/R2Stretcher.cpp",
+                "rubberband/src/faster/StretcherChannelData.cpp",
+                "rubberband/src/faster/StretcherProcess.cpp",
+                "rubberband/src/common/Allocators.cpp",
+                "rubberband/src/common/BQResampler.cpp",
+                "rubberband/src/common/FFT.cpp",
+                "rubberband/src/common/Log.cpp",
+                "rubberband/src/common/Profiler.cpp",
+                "rubberband/src/common/Resampler.cpp",
+                "rubberband/src/common/StretchCalculator.cpp",
+                "rubberband/src/common/Thread.cpp",
+                "rubberband/src/common/mathmisc.cpp",
+                "rubberband/src/common/sysutils.cpp",
+                "rubberband/src/finer/R3LiveShifter.cpp",
+                "rubberband/src/finer/R3Stretcher.cpp",
             ],
             publicHeadersPath: "Sources/CRubberBand/include",
             cxxSettings: [
@@ -73,11 +93,11 @@ let package = Package(
                 .define("NDEBUG"),
                 .headerSearchPath("rubberband"),
                 .headerSearchPath("rubberband/src"),
-                // sysutils.h on Darwin/clang doesn't pull in <stddef.h>
-                // explicitly; the meson build gets size_t into the global
-                // namespace only via transitive inclusion that doesn't fire
-                // in every SwiftPM translation-unit order. Force it in.
-                .unsafeFlags(["-include", "stddef.h"]),
+                .headerSearchPath("Sources/CRubberBand/include"),
+                // Force every translation unit to see size_t / ptrdiff_t in
+                // the global namespace before any Rubber Band header is read.
+                // See rb_prefix.h for details.
+                .unsafeFlags(["-include", "rb_prefix.h"]),
             ],
             linkerSettings: [
                 .linkedFramework("Accelerate"),
