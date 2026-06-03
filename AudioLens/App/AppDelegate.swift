@@ -10,12 +10,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private let recentMenuDelegate = RecentFilesMenuDelegate()
+    private let bookmarksMenuDelegate = BookmarksMenuDelegate()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
 
         let controller = MainWindowController()
         mainWindowController = controller
+        bookmarksMenuDelegate.windowController = controller
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
 
@@ -102,6 +104,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ))
         controlsMenuItem.submenu = controlsMenu
 
+        // Bookmarks menu. Add / navigation items are clickable here; their
+        // keyboard shortcuts live in KeyBindings (Preferences). The list of
+        // bookmarks is filled on open by the delegate.
+        let bookmarksMenuItem = NSMenuItem()
+        mainMenu.addItem(bookmarksMenuItem)
+        let bookmarksMenu = NSMenu(title: "Bookmarks")
+        bookmarksMenu.autoenablesItems = false
+        bookmarksMenu.delegate = bookmarksMenuDelegate
+        bookmarksMenuItem.submenu = bookmarksMenu
+
         NSApp.mainMenu = mainMenu
     }
 
@@ -149,5 +161,54 @@ final class RecentFilesMenuDelegate: NSObject, NSMenuDelegate {
             action: #selector(NSDocumentController.clearRecentDocuments(_:)),
             keyEquivalent: ""
         ))
+    }
+}
+
+/// Builds the Bookmarks menu on open: add/navigation commands, then the list
+/// of bookmarks (timecoded, time-ordered) which seek when chosen.
+@MainActor
+final class BookmarksMenuDelegate: NSObject, NSMenuDelegate {
+
+    weak var windowController: MainWindowController?
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+
+        menu.addItem(NSMenuItem(title: "Add Bookmark",
+                                action: #selector(MainWindowController.addBookmark(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Next Bookmark",
+                                action: #selector(MainWindowController.nextBookmark(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Previous Bookmark",
+                                action: #selector(MainWindowController.previousBookmark(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "First Bookmark",
+                                action: #selector(MainWindowController.firstBookmark(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Last Bookmark",
+                                action: #selector(MainWindowController.lastBookmark(_:)),
+                                keyEquivalent: ""))
+        menu.addItem(.separator())
+
+        let entries = windowController?.bookmarkEntries ?? []
+        if entries.isEmpty {
+            let item = NSMenuItem(title: "No Bookmarks", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        } else {
+            for (index, entry) in entries.enumerated() {
+                let item = NSMenuItem(title: "\(index + 1).  \(entry.label)",
+                                      action: #selector(MainWindowController.openBookmark(_:)),
+                                      keyEquivalent: "")
+                item.representedObject = NSNumber(value: entry.frame)
+                menu.addItem(item)
+            }
+            menu.addItem(.separator())
+            menu.addItem(NSMenuItem(title: "Clear Bookmarks",
+                                    action: #selector(MainWindowController.clearBookmarks(_:)),
+                                    keyEquivalent: ""))
+        }
     }
 }

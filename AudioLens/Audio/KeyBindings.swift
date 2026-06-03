@@ -15,6 +15,11 @@ enum KeyboardAction: String, CaseIterable, Codable, Sendable {
     case seekForward10
     case seekBack30
     case seekForward30
+    case addBookmark
+    case nextBookmark
+    case previousBookmark
+    case lastBookmark
+    case firstBookmark
 
     var displayName: String {
         switch self {
@@ -29,6 +34,11 @@ enum KeyboardAction: String, CaseIterable, Codable, Sendable {
         case .seekForward10:    return "Skip Forward 10 s"
         case .seekBack30:       return "Skip Back 30 s"
         case .seekForward30:    return "Skip Forward 30 s"
+        case .addBookmark:      return "Add Bookmark"
+        case .nextBookmark:     return "Next Bookmark"
+        case .previousBookmark: return "Previous Bookmark"
+        case .lastBookmark:     return "Last Bookmark"
+        case .firstBookmark:    return "First Bookmark"
         }
     }
 }
@@ -201,6 +211,11 @@ final class KeyBindings {
         case .seekForward10:    return KeyShortcut(keyCode: 124, modifiers: .command)    // ⌘→
         case .seekBack30:       return KeyShortcut(keyCode: 123, modifiers: [.option, .command]) // ⌥⌘←
         case .seekForward30:    return KeyShortcut(keyCode: 124, modifiers: [.option, .command]) // ⌥⌘→
+        case .addBookmark:      return KeyShortcut(keyCode: 11, modifiers: .command)        // ⌘B
+        case .nextBookmark:     return KeyShortcut(keyCode: 126)                            // ↑
+        case .previousBookmark: return KeyShortcut(keyCode: 125)                            // ↓
+        case .lastBookmark:     return KeyShortcut(keyCode: 126, modifiers: .option)        // ⌥↑
+        case .firstBookmark:    return KeyShortcut(keyCode: 125, modifiers: .option)        // ⌥↓
         }
     }
 }

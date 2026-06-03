@@ -130,6 +130,8 @@ final class AudioEngine {
         sourceURL = url
         fullBuffer = buffer
         selection = .whole
+        bookmarks = []
+        onBookmarksChanged?()
         rebuildGraph(format: buffer.format)
         core.install(buffer: buffer,
                      stretcher: stretcher,
@@ -245,6 +247,82 @@ final class AudioEngine {
             let upperBound = max(lowerBound, upperBoundExclusive - 1)
             seek(toFrame: max(lowerBound, min(upperBound, target)))
         }
+    }
+
+    /// Set the loop region's edges directly (e.g. dragging the loop handles),
+    /// without moving the playhead. Updates the live loop bounds; if the cursor
+    /// ends up outside, the render clamps it next slice.
+    func setRegionBounds(start: AVAudioFramePosition, end: AVAudioFramePosition) {
+        guard fullBuffer != nil else { return }
+        let lo = max(0, min(totalFrames, min(start, end)))
+        let hi = max(lo + 1, min(totalFrames, max(start, end)))
+        selection = .region(start: lo, length: AVAudioFrameCount(hi - lo), loops: loopMode)
+        core.setRegion(start: lo, end: hi, looping: loopMode, seekToStart: false)
+    }
+
+    // MARK: - Bookmarks
+
+    /// Bookmark positions in source-buffer frames, kept sorted ascending.
+    /// In-memory and per loaded file (cleared on load).
+    private(set) var bookmarks: [AVAudioFramePosition] = []
+
+    /// Invoked on the main actor whenever the bookmark set changes, so the
+    /// menu and waveform can refresh.
+    var onBookmarksChanged: (() -> Void)?
+
+    private var bookmarkTolerance: AVAudioFramePosition {
+        max(1, AVAudioFramePosition(sampleRate * 0.05))   // 50 ms
+    }
+
+    func addBookmarkAtPlayhead() {
+        addBookmark(at: currentFramePosition)
+    }
+
+    func addBookmark(at frame: AVAudioFramePosition) {
+        guard fullBuffer != nil else { return }
+        let clamped = max(0, min(totalFrames, frame))
+        if bookmarks.contains(where: { abs($0 - clamped) < bookmarkTolerance }) { return }
+        bookmarks.append(clamped)
+        bookmarks.sort()
+        onBookmarksChanged?()
+    }
+
+    func removeBookmark(at frame: AVAudioFramePosition) {
+        let before = bookmarks.count
+        bookmarks.removeAll { abs($0 - frame) < bookmarkTolerance }
+        if bookmarks.count != before { onBookmarksChanged?() }
+    }
+
+    func clearBookmarks() {
+        guard !bookmarks.isEmpty else { return }
+        bookmarks.removeAll()
+        onBookmarksChanged?()
+    }
+
+    func goToBookmark(at frame: AVAudioFramePosition) {
+        seek(toFrame: frame)
+    }
+
+    func goToNextBookmark() {
+        let cur = currentFramePosition
+        if let next = bookmarks.first(where: { $0 > cur + bookmarkTolerance }) {
+            seek(toFrame: next)
+        }
+    }
+
+    func goToPreviousBookmark() {
+        let cur = currentFramePosition
+        if let prev = bookmarks.last(where: { $0 < cur - bookmarkTolerance }) {
+            seek(toFrame: prev)
+        }
+    }
+
+    func goToFirstBookmark() {
+        if let first = bookmarks.first { seek(toFrame: first) }
+    }
+
+    func goToLastBookmark() {
+        if let last = bookmarks.last { seek(toFrame: last) }
     }
 
     private func applyRegionToCore(seekToStart: Bool) {

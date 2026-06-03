@@ -74,6 +74,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         case .seekForward10:  audioEngine.seekRelative(seconds: 10)
         case .seekBack30:     audioEngine.seekRelative(seconds: -30)
         case .seekForward30:  audioEngine.seekRelative(seconds: 30)
+        case .addBookmark:      audioEngine.addBookmarkAtPlayhead()
+        case .nextBookmark:     audioEngine.goToNextBookmark()
+        case .previousBookmark: audioEngine.goToPreviousBookmark()
+        case .lastBookmark:     audioEngine.goToLastBookmark()
+        case .firstBookmark:    audioEngine.goToFirstBookmark()
         }
     }
 
@@ -122,6 +127,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     @objc func goToStart(_ sender: Any?) {
         audioEngine.seekToStart()
+    }
+
+    // MARK: - Bookmark actions (menu)
+
+    @objc func addBookmark(_ sender: Any?) { audioEngine.addBookmarkAtPlayhead() }
+    @objc func nextBookmark(_ sender: Any?) { audioEngine.goToNextBookmark() }
+    @objc func previousBookmark(_ sender: Any?) { audioEngine.goToPreviousBookmark() }
+    @objc func firstBookmark(_ sender: Any?) { audioEngine.goToFirstBookmark() }
+    @objc func lastBookmark(_ sender: Any?) { audioEngine.goToLastBookmark() }
+    @objc func clearBookmarks(_ sender: Any?) { audioEngine.clearBookmarks() }
+
+    @objc func openBookmark(_ sender: NSMenuItem) {
+        guard let number = sender.representedObject as? NSNumber else { return }
+        audioEngine.goToBookmark(at: number.int64Value)
+    }
+
+    /// Bookmarks as (frame, timecode label) for the Bookmarks menu.
+    var bookmarkEntries: [(frame: AVAudioFramePosition, label: String)] {
+        let rate = audioEngine.sampleRate
+        return audioEngine.bookmarks.map { frame in
+            (frame, Self.formatTimecode(Double(frame) / rate))
+        }
+    }
+
+    /// hh:mm:ss:xx where xx is hundredths of a second.
+    static func formatTimecode(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00:00:00" }
+        let totalHundredths = Int((seconds * 100).rounded())
+        let hundredths = totalHundredths % 100
+        let totalSeconds = totalHundredths / 100
+        let s = totalSeconds % 60
+        let m = (totalSeconds / 60) % 60
+        let h = totalSeconds / 3600
+        return String(format: "%02d:%02d:%02d:%02d", h, m, s, hundredths)
     }
 
     private func load(url: URL) async {
