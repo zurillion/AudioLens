@@ -17,14 +17,16 @@ final class RubberBandStretcher {
 
     init(sampleRate: Double, channels: Int) {
         self.channelCount = channels
-        // RubberBandOptions is a typedef'd Int32 (not UInt32). The enum cases
-        // imported from <rubberband-c.h> already have RawValue == Int32.
-        let options = RubberBandOptionEngineFiner.rawValue |
-                      RubberBandOptionProcessRealTime.rawValue
+        // The C typedef RubberBandOptions is `int` (Int32), but Swift imports
+        // the underlying enum's RawValue as UInt32. Bit-pattern conversion
+        // bridges them without overflow even if a future option uses the
+        // high bit.
+        let optionsBits = RubberBandOptionEngineFiner.rawValue |
+                          RubberBandOptionProcessRealTime.rawValue
         self.state = rubberband_new(
             UInt32(sampleRate),
             UInt32(channels),
-            options,
+            Int32(bitPattern: optionsBits),
             1.0,   // initial time ratio (1.0 = unchanged speed)
             1.0    // initial pitch scale (1.0 = unchanged pitch)
         )
