@@ -44,7 +44,13 @@ final class RubberBandAudioUnit: AUAudioUnit {
 
     private let processingFormat: AVAudioFormat
     private let channelCount: Int
-    private let maxPullFrames: AVAudioFrameCount = 4096
+    /// Maximum frames per pullInputBlock / per render slice. Kept conservative
+    /// so we don't ask AVAudioPlayerNode for more frames than its internal
+    /// mMaxFramesPerSlice (~896 in practice), which triggers
+    /// kAudioUnitErr_TooManyFramesToProcess (-10874). 512 is also the typical
+    /// Core Audio render quantum on macOS; bigger slices give no audible
+    /// benefit and risk this kind of mismatch with neighbours.
+    private let maxPullFrames: AVAudioFrameCount = 512
 
     private var stretcher: RubberBandStretcher?
     private var _inputBusses: AUAudioUnitBusArray!
