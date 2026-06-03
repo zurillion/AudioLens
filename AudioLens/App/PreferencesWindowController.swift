@@ -26,7 +26,7 @@ final class PreferencesWindowController: NSWindowController,
     private let statusLabel = NSTextField(labelWithString: "Select a row and click Record to assign a new shortcut.")
     private let recordButton = NSButton(title: "Record…", target: nil, action: nil)
 
-    private var bindingsObserver: NSObjectProtocol?
+    private var bindingsObserver: (any NSObjectProtocol)?
     private var recordingAction: KeyboardAction?
 
     init() {
