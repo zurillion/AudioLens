@@ -15,16 +15,15 @@ final class RubberBandStretcher {
 
     init(sampleRate: Double, channels: Int) {
         self.channelCount = channels
-        // R2 (Faster) engine in real-time mode. R3 (Finer) sounds even better
-        // but is much more CPU-heavy and was blowing AVAudioEngine's render
-        // deadline (HALC "skipping cycle due to overload" → buzzing audio).
-        // R2 is still a serious phase vocoder and a clear step up from
-        // AVAudioUnitTimePitch; we can revisit R3 once we have lower-overhead
-        // scheduling (e.g. a dedicated audio thread feeding a ring buffer).
+        // R3 (Finer) engine in real-time mode — Rubber Band's highest-quality
+        // path. The earlier overload/distortion wasn't R3's CPU cost; it was a
+        // broken consumption model (an AU effect pulling variable input through
+        // pullInputBlock). Driving the stretcher from an AVAudioSourceNode that
+        // reads the decoded buffer directly fixes that, so we keep R3.
         //
         // The C typedef RubberBandOptions is `int` (Int32) but Swift imports
         // the enum's RawValue as UInt32; bit-pattern conversion bridges them.
-        let optionsBits = RubberBandOptionEngineFaster.rawValue |
+        let optionsBits = RubberBandOptionEngineFiner.rawValue |
                           RubberBandOptionProcessRealTime.rawValue
         self.state = rubberband_new(
             UInt32(sampleRate),
@@ -61,6 +60,36 @@ final class RubberBandStretcher {
 
     func reset() {
         rubberband_reset(state)
+    }
+
+    /// Warm the engine before real playback by processing `preferredStartPad`
+    /// frames of silence (and discarding the stretched result). Must be called
+    /// off the audio thread — it allocates. Without priming, the first render
+    /// would have to drive the stretcher from cold (getSamplesRequired returns
+    /// thousands of frames), spiking CPU on the realtime thread.
+    func prime() {
+        let pad = max(0, preferredStartPad)
+        guard pad > 0 else { return }
+
+        let silence = UnsafeMutablePointer<Float>.allocate(capacity: pad)
+        silence.update(repeating: 0, count: pad)
+        defer { silence.deallocate() }
+        let inPtrs = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: channelCount)
+        defer { inPtrs.deallocate() }
+        for ch in 0..<channelCount { inPtrs[ch] = UnsafePointer(silence) }
+        process(input: UnsafePointer(inPtrs), sampleCount: pad, final: false)
+
+        let capacity = available
+        guard capacity > 0 else { return }
+        let discard = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
+        defer { discard.deallocate() }
+        let outPtrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>?>.allocate(capacity: channelCount)
+        defer { outPtrs.deallocate() }
+        for ch in 0..<channelCount { outPtrs[ch] = discard }
+        while available > 0 {
+            let got = retrieve(output: UnsafePointer(outPtrs), sampleCount: min(available, capacity))
+            if got <= 0 { break }
+        }
     }
 
     // MARK: - Latency

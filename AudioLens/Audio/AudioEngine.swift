@@ -1,13 +1,17 @@
 import AVFoundation
 import Foundation
 
-/// Wraps a non-Sendable value so it can cross a Task boundary. The buffer is
-/// produced by a decoder, then immutably read from the main actor; nothing
-/// mutates it concurrently, so the manual Sendable conformance is safe.
+/// Wraps a non-Sendable value so it can cross a Task boundary. Produced by the
+/// decode task and consumed once on the main actor; nothing mutates it
+/// concurrently, so the manual Sendable conformance is safe.
 private struct UncheckedSendable<T>: @unchecked Sendable {
     let value: T
 }
 
+/// Main-actor controller over the real-time PlaybackCore. Translates UI intent
+/// (load / play / pause / seek / select / loop / pitch / rate / volume) into
+/// thread-safe commands on the core, which drives an AVAudioSourceNode through
+/// Rubber Band and then the graphic EQ.
 @MainActor
 final class AudioEngine {
 
@@ -23,54 +27,27 @@ final class AudioEngine {
     private(set) var fullBuffer: AVAudioPCMBuffer?
     private(set) var selection: Selection = .whole
 
-    /// Absolute frame from which the currently scheduled slice starts playing.
-    /// Used so the playhead position is correct after a seek even before the
-    /// player begins consuming samples. Defaults to the selection's start
-    /// after a normal play(), is overridden by seek() to the seek target.
-    private var scheduledStartFrame: AVAudioFramePosition = 0
-
-    /// True when seek() has scheduled a slice but the user hasn't pressed play
-    /// yet. In that state play() must NOT re-schedule (which would discard the
-    /// seek and start from the selection's beginning) — it should just resume.
-    private var pendingSeek: Bool = false
-
-    /// Captured playhead position at the moment pause() was called. The
-    /// player's playerTime(forNodeTime:) returns nil while paused (isPlaying
-    /// is false), which would otherwise make currentFramePosition collapse
-    /// back to scheduledStartFrame and the cursor "reset" visually.
-    private var pausedAtFrame: AVAudioFramePosition?
-
-    /// Pinned playhead position after a non-loop playback finishes naturally.
-    /// Without this, the cursor would snap back to scheduledStartFrame (start
-    /// of selection) the instant state transitions to .loaded. Set in
-    /// handlePlaybackEnded, cleared on play/seek/stop/setSelection/install.
-    private var playheadOverride: AVAudioFramePosition?
-
-    /// Strong reference to the slice currently scheduled with .loops, kept
-    /// just in case the player doesn't retain it across loop iterations.
-    private var loopingSlice: AVAudioPCMBuffer?
-
     /// Whether new region selections should loop. Defaults to true: selecting a
-    /// region is overwhelmingly a "loop this section to practice it" action, and
-    /// a separate checkbox was too easy to miss (making selections play once and
-    /// stop, which looked like a broken loop). Toggling while a region is active
-    /// updates that region's loop flag immediately.
+    /// region is overwhelmingly a "loop this section to practice it" action.
     var loopMode: Bool = true {
         didSet {
             guard oldValue != loopMode else { return }
             if case .region(let start, let length, _) = selection {
-                setSelection(.region(start: start, length: length, loops: loopMode))
+                selection = .region(start: start, length: length, loops: loopMode)
+                core.setLooping(loopMode)
             }
         }
     }
 
     let engine = AVAudioEngine()
-    let player = AVAudioPlayerNode()
-    /// Custom AUAudioUnit wrapping Rubber Band's R3 engine. Connected in the
-    /// graph between `player` and `eq`. Latency is reported by the AU so
-    /// AVAudioEngine compensates upstream timing automatically.
-    let pitchTime: AVAudioUnit
     let eq: AVAudioUnitEQ
+    private let core = PlaybackCore()
+    private var sourceNode: AVAudioSourceNode?
+
+    // Pitch / time held as Rubber Band's native quantities so we can hand them
+    // to a freshly created stretcher before priming (avoids a transient).
+    private var currentPitchScale: Double = 1.0
+    private var currentTimeRatio: Double = 1.0
 
     static let eqBandFrequencies: [Float] = [
         31, 62, 125, 250, 500,
@@ -79,86 +56,38 @@ final class AudioEngine {
 
     init() {
         self.eq = AVAudioUnitEQ(numberOfBands: Self.eqBandFrequencies.count)
-        // Trigger one-time AU registration before the instantiate call below
-        // can find the component description.
-        _ = RubberBandAudioUnit.registerOnce
-        self.pitchTime = Self.makeRubberBandUnit()
         configureEQ()
-        attachNodes()
-    }
-
-    private var rubberBand: RubberBandAudioUnit {
-        // Safe: makeRubberBandUnit() enforces this cast and the property is
-        // only set there.
-        pitchTime.auAudioUnit as! RubberBandAudioUnit
-    }
-
-    /// Synchronously instantiate the in-process Rubber Band AU. AVAudioUnit's
-    /// completion-handler form is the public API; we serialise around it with
-    /// a semaphore so AudioEngine.init() stays synchronous. The blocking
-    /// window is a one-shot at app startup.
-    private static func makeRubberBandUnit() -> AVAudioUnit {
-        final class Box: @unchecked Sendable {
-            var unit: AVAudioUnit?
-            var error: (any Error)?
-        }
-        let box = Box()
-        let semaphore = DispatchSemaphore(value: 0)
-        AVAudioUnit.instantiate(with: RubberBandAudioUnit.componentDescription,
-                                options: []) { unit, error in
-            box.unit = unit
-            box.error = error
-            semaphore.signal()
-        }
-        semaphore.wait()
-        if let unit = box.unit, unit.auAudioUnit is RubberBandAudioUnit {
-            return unit
-        }
-        let detail: String
-        if let err = box.error as NSError? {
-            detail = "domain=\(err.domain) code=\(err.code) userInfo=\(err.userInfo)"
-        } else if let err = box.error {
-            detail = err.localizedDescription
-        } else if let wrongUnit = box.unit {
-            detail = "instantiated wrong AU class: \(type(of: wrongUnit.auAudioUnit))"
-        } else {
-            detail = "no unit and no error"
-        }
-        fatalError("Failed to instantiate Rubber Band AU: \(detail)")
+        engine.attach(eq)
     }
 
     // MARK: - Loading
 
     func load(url: URL) async throws {
+        let pitchScale = currentPitchScale
+        let timeRatio = currentTimeRatio
         let box = try await Task.detached(priority: .userInitiated) {
-            UncheckedSendable(value: try SFBAudioLoader.decode(url: url))
+            // SFBAudioLoader already returns float32 non-interleaved stereo at a
+            // standard sample rate, so no further normalisation is needed.
+            let buffer = try SFBAudioLoader.decode(url: url)
+            let stretcher = RubberBandStretcher(sampleRate: buffer.format.sampleRate,
+                                                channels: Int(buffer.format.channelCount))
+            stretcher.pitchScale = pitchScale
+            stretcher.timeRatio = timeRatio
+            stretcher.prime()
+            return UncheckedSendable(value: (buffer, stretcher))
         }.value
-        installBuffer(box.value, url: url)
+        install(buffer: box.value.0, stretcher: box.value.1, url: url)
     }
 
-    private func installBuffer(_ buffer: AVAudioPCMBuffer, url: URL) {
-        // AVAudioUnitTimePitch (and the mixer) reject non-standard formats with
-        // an NSException — which on Swift means a crash. Convert the decoded
-        // buffer to a known-good format (float32 non-interleaved stereo, a
-        // sample rate in {22.05, 44.1, 48, 88.2, 96} kHz) up front.
-        let normalised: AVAudioPCMBuffer
-        do {
-            normalised = try Self.normalisedBuffer(from: buffer)
-        } catch {
-            NSLog("AudioEngine: format normalisation failed: \(error)")
-            return
-        }
-
-        stop()
+    private func install(buffer: AVAudioPCMBuffer, stretcher: RubberBandStretcher, url: URL) {
         sourceURL = url
-        fullBuffer = normalised
+        fullBuffer = buffer
         selection = .whole
-        scheduledStartFrame = 0
-        pendingSeek = false
-        pausedAtFrame = nil
-        playheadOverride = nil
-        loopingSlice = nil
-        connectGraph(processingFormat: normalised.format)
+        rebuildGraph(format: buffer.format)
+        core.install(buffer: buffer,
+                     stretcher: stretcher,
+                     regionStart: 0,
+                     regionEnd: AVAudioFramePosition(buffer.frameLength))
         if !engine.isRunning {
             do {
                 try engine.start()
@@ -169,119 +98,83 @@ final class AudioEngine {
         state = .loaded
     }
 
-    private static let supportedSampleRates: Set<Double> = [22_050, 44_100, 48_000, 88_200, 96_000]
-
-    private static func normalisedBuffer(from source: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
-        let sourceFormat = source.format
-        let targetRate = supportedSampleRates.contains(sourceFormat.sampleRate) ? sourceFormat.sampleRate : 48_000
-        guard let targetFormat = AVAudioFormat(standardFormatWithSampleRate: targetRate, channels: 2) else {
-            throw NSError(domain: "AudioLens",
-                          code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "Could not build target processing format."])
-        }
-        if sourceFormat.isEqual(targetFormat) {
-            return source
-        }
-        guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
-            throw NSError(domain: "AudioLens",
-                          code: -2,
-                          userInfo: [NSLocalizedDescriptionKey: "Could not create AVAudioConverter from \(sourceFormat) to \(targetFormat)."])
-        }
-        let ratio = targetRate / sourceFormat.sampleRate
-        let outputCapacity = AVAudioFrameCount(Double(source.frameLength) * ratio) + 1_024
-        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outputCapacity) else {
-            throw NSError(domain: "AudioLens",
-                          code: -3,
-                          userInfo: [NSLocalizedDescriptionKey: "Could not allocate normalised buffer."])
-        }
-
-        // AVAudioConverterInputBlock is @Sendable under Swift 6, so we can't
-        // capture a mutable Bool or a non-Sendable AVAudioPCMBuffer directly.
-        // AVAudioConverter calls the block synchronously from convert(), so a
-        // class shared between caller and block is safe — wrap the state in
-        // an @unchecked Sendable holder.
-        final class InputProvider: @unchecked Sendable {
-            var consumed = false
-            let buffer: AVAudioPCMBuffer
-            init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
-        }
-        let provider = InputProvider(source)
-        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
-            if provider.consumed {
-                outStatus.pointee = .endOfStream
-                return nil
-            }
-            provider.consumed = true
-            outStatus.pointee = .haveData
-            return provider.buffer
-        }
-
-        var error: NSError?
-        let status = converter.convert(to: output, error: &error, withInputFrom: inputBlock)
-        if status == .error {
-            throw error ?? NSError(domain: "AudioLens",
-                                   code: -4,
-                                   userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter failed."])
-        }
-        return output
-    }
-
     // MARK: - Transport
 
     func play() {
         guard fullBuffer != nil else { return }
-        playheadOverride = nil
-        if state == .paused {
-            player.play()
-            state = .playing
-            pausedAtFrame = nil
-            return
+        if core.isFinished {
+            // Restart the selection from its beginning after a natural end.
+            core.seek(to: selectionStartFrame)
         }
-        if pendingSeek {
-            // seek() already scheduled the slice; just start the player.
-            player.play()
-            state = .playing
-            pendingSeek = false
-            pausedAtFrame = nil
-            return
-        }
-        scheduleCurrentSelection()
-        player.play()
+        core.setPlaying(true)
         state = .playing
-        pausedAtFrame = nil
     }
 
     func pause() {
         guard state == .playing else { return }
-        // Capture the current playhead before pausing — playerTime returns nil
-        // once isPlaying is false, so we need to remember where we were.
-        pausedAtFrame = currentFramePosition
-        player.pause()
+        core.setPlaying(false)
         state = .paused
     }
 
     func stop() {
-        player.stop()
-        scheduledStartFrame = selectionStartFrame
-        pendingSeek = false
-        pausedAtFrame = nil
-        playheadOverride = nil
-        loopingSlice = nil
+        core.setPlaying(false)
+        core.seek(to: selectionStartFrame)
         state = sourceURL == nil ? .idle : .loaded
     }
 
-    /// Move the playhead back to the start of the current playback context:
-    /// the start of the active region if there is one, otherwise the start of
-    /// the file. Honours the same play/pause semantics as seek().
+    /// Toggle play/pause for the spacebar shortcut.
+    func togglePlayPause() {
+        switch state {
+        case .playing:
+            pause()
+        case .paused, .loaded:
+            play()
+        case .idle:
+            break
+        }
+    }
+
+    /// Reconcile main-actor state with the core after a natural end-of-playback
+    /// (the render thread flips the core to finished). Called from the UI's
+    /// playhead timer.
+    func reconcile() {
+        if state == .playing && core.isFinished {
+            state = .loaded
+        }
+    }
+
+    // MARK: - Selection & seeking
+
+    func setSelection(_ selection: Selection) {
+        self.selection = selection
+        applyRegionToCore(seekToStart: true)
+    }
+
+    /// Move the playhead to an absolute frame. A click inside the active region
+    /// stays within it (the loop continues); a click outside clears the region
+    /// and plays the whole file from there. Playback state is preserved.
+    func seek(toFrame frame: AVAudioFramePosition) {
+        guard fullBuffer != nil else { return }
+        let clamped = max(0, min(totalFrames, frame))
+        if case .region(let start, let length, _) = selection {
+            let regionEnd = start + AVAudioFramePosition(length)
+            if !(clamped >= start && clamped < regionEnd) {
+                selection = .whole
+            }
+        }
+        applyRegionToCore(seekToStart: false)
+        core.seek(to: clamped)
+    }
+
+    /// Move to the start of the current playback context (region start, or file
+    /// start when there's no region). Preserves playing/paused state.
     func seekToStart() {
         seek(toFrame: selectionStartFrame)
     }
 
-    /// Nudge the playhead by `seconds` (negative = backward). When a looping
-    /// region is active, crossing either edge wraps modulo the region length
-    /// — the loop semantics extend to keyboard seeking. Otherwise the target
-    /// is clamped, one frame short of the exclusive end so seek()'s
-    /// "inside region" check still passes.
+    /// Nudge the playhead by `seconds` (negative = backward). A looping region
+    /// wraps modulo its length; otherwise the target is clamped one frame short
+    /// of the exclusive end so seek()'s "inside region" test still passes.
     func seekRelative(seconds: Double) {
         let delta = AVAudioFramePosition(seconds * sampleRate)
         let target = currentFramePosition + delta
@@ -298,8 +191,6 @@ final class AudioEngine {
         }
         let span = upperBoundExclusive - lowerBound
         if wrap, span > 0 {
-            // Swift's % keeps the sign of the dividend, so add span and modulo
-            // again to land in [lowerBound, upperBoundExclusive).
             var offset = (target - lowerBound) % span
             if offset < 0 { offset += span }
             seek(toFrame: lowerBound + offset)
@@ -309,129 +200,36 @@ final class AudioEngine {
         }
     }
 
-    /// Output volume. 0.0 = silent, 1.0 = unity, up to 2.0 (200%). Values
-    /// above unity can clip on already-hot material.
-    var volume: Float {
-        get { engine.mainMixerNode.outputVolume }
-        set { engine.mainMixerNode.outputVolume = max(0, min(2.0, newValue)) }
+    private func applyRegionToCore(seekToStart: Bool) {
+        let start = selectionStartFrame
+        let end: AVAudioFramePosition
+        let looping: Bool
+        switch selection {
+        case .whole:
+            end = totalFrames
+            looping = false
+        case .region(let s, let length, let loops):
+            end = s + AVAudioFramePosition(length)
+            looping = loops
+        }
+        core.setRegion(start: start, end: end, looping: looping, seekToStart: seekToStart)
     }
 
-    /// Toggle play/pause for the spacebar shortcut.
-    func togglePlayPause() {
-        switch state {
-        case .playing:
-            pause()
-        case .paused, .loaded:
-            play()
-        case .idle:
-            break
-        }
-    }
-
-    // MARK: - Selection
-
-    func setSelection(_ selection: Selection) {
-        self.selection = selection
-        scheduledStartFrame = selectionStartFrame
-        pendingSeek = false
-        pausedAtFrame = nil
-        playheadOverride = nil
-        loopingSlice = nil
-        switch state {
-        case .playing:
-            stop()
-            play()
-        case .paused:
-            // The scheduled buffer is now stale; discard it so the next play()
-            // reschedules the new selection from its start.
-            stop()
-        case .loaded, .idle:
-            break
-        }
-    }
-
-    /// Move the playhead to an absolute frame in the file. If the click lands
-    /// inside the active region, stay in the loop (seek within); otherwise
-    /// clear the region and play from the seek point through the end of file.
-    /// Continues playback if it was playing.
-    func seek(toFrame frame: AVAudioFramePosition) {
-        guard let buffer = fullBuffer else { return }
-        let wasPlaying = (state == .playing)
-        let total = totalFrames
-        let clamped = max(0, min(total, frame))
-
-        var keepLoopRegion: (start: AVAudioFramePosition, length: AVAudioFrameCount)? = nil
-        var sliceEnd: AVAudioFramePosition = total
-
-        if case .region(let start, let length, let loops) = selection {
-            let regionEnd = start + AVAudioFramePosition(length)
-            if clamped >= start && clamped < regionEnd {
-                sliceEnd = regionEnd
-                if loops { keepLoopRegion = (start, length) }
-            } else {
-                // Click outside the region: clear it.
-                selection = .whole
-            }
-        }
-
-        player.stop()
-        scheduledStartFrame = clamped
-        playheadOverride = nil
-
-        let initialLength = AVAudioFrameCount(sliceEnd - clamped)
-        guard initialLength > 0,
-              let initialSlice = Self.makeSlice(of: buffer, start: clamped, length: initialLength) else {
-            state = .loaded
-            return
-        }
-
-        if let loop = keepLoopRegion {
-            // Partial slice from seek point to region end (plays once), then
-            // the full region looped via manual re-scheduling. Two distinct
-            // fresh slice copies pre-scheduled so neither the player nor a
-            // downstream AU dedups them.
-            if let loopSlice1 = Self.makeSlice(of: buffer, start: loop.start, length: loop.length),
-               let loopSlice2 = Self.makeSlice(of: buffer, start: loop.start, length: loop.length) {
-                loopingSlice = loopSlice2
-                player.scheduleBuffer(initialSlice, at: nil, options: [], completionHandler: nil)
-                scheduleLoopSlice(loopSlice1)
-                scheduleLoopSlice(loopSlice2)
-            } else {
-                loopingSlice = nil
-                scheduleEndingBuffer(initialSlice)
-            }
-        } else {
-            loopingSlice = nil
-            scheduleEndingBuffer(initialSlice)
-        }
-
-        if wasPlaying {
-            player.play()
-            state = .playing
-            pendingSeek = false
-        } else {
-            state = .loaded
-            pendingSeek = true
-        }
-    }
+    // MARK: - Derived positions
 
     /// Absolute frame offset where the current selection begins.
     var selectionStartFrame: AVAudioFramePosition {
         switch selection {
-        case .whole:
-            return 0
-        case .region(let start, _, _):
-            return start
+        case .whole: return 0
+        case .region(let start, _, _): return start
         }
     }
 
-    /// Frame count of the slice currently scheduled (whole file or region).
+    /// Frame count of the active selection (whole file or region).
     var selectionLength: AVAudioFrameCount {
         switch selection {
-        case .whole:
-            return fullBuffer?.frameLength ?? 0
-        case .region(_, let length, _):
-            return length
+        case .whole: return fullBuffer?.frameLength ?? 0
+        case .region(_, let length, _): return length
         }
     }
 
@@ -440,45 +238,9 @@ final class AudioEngine {
         AVAudioFramePosition(fullBuffer?.frameLength ?? 0)
     }
 
-    /// Absolute playhead position in the original buffer's frame space.
-    /// Accounts for: normal play from selection start, seek (scheduledStartFrame
-    /// overrides), and looped playback (sampleTime grows monotonically across
-    /// loop iterations, so we map it back into the region).
+    /// Current playhead position in source-buffer frames (the read cursor).
     var currentFramePosition: AVAudioFramePosition {
-        if let override = playheadOverride {
-            return override
-        }
-        if state == .paused, let frozen = pausedAtFrame {
-            return frozen
-        }
-        guard state == .playing || state == .paused,
-              let lastRender = player.lastRenderTime,
-              let playerTime = player.playerTime(forNodeTime: lastRender) else {
-            return scheduledStartFrame
-        }
-        let elapsed = max(0, playerTime.sampleTime)
-        switch selection {
-        case .whole:
-            return min(scheduledStartFrame + elapsed, totalFrames)
-        case .region(let start, let length, let loops):
-            let lengthFrames = AVAudioFramePosition(length)
-            guard lengthFrames > 0 else { return start }
-            let regionEnd = start + lengthFrames
-            // After a seek-within-region, the first slice plays from
-            // scheduledStartFrame to regionEnd (possibly shorter than length).
-            // Once that completes, the looping slice [start, regionEnd) takes over.
-            let firstIterFrames = max(AVAudioFramePosition(0), regionEnd - scheduledStartFrame)
-            if elapsed < firstIterFrames {
-                return scheduledStartFrame + elapsed
-            } else if loops {
-                let afterFirst = elapsed - firstIterFrames
-                return start + (afterFirst % lengthFrames)
-            } else {
-                // Non-loop region played out: clamp to end so the cursor
-                // stops there instead of wrapping.
-                return regionEnd
-            }
-        }
+        max(0, min(totalFrames, core.playhead))
     }
 
     /// Audio sample rate, for converting frames to seconds.
@@ -488,14 +250,32 @@ final class AudioEngine {
 
     // MARK: - Pitch & time
 
+    /// Pitch offset in cents. Stored as Rubber Band's pitch scale internally.
     var pitchCents: Float {
-        get { Float(rubberBand.pitchCents) }
-        set { rubberBand.pitchCents = Double(newValue) }
+        get { Float(1200.0 * log2(currentPitchScale)) }
+        set {
+            currentPitchScale = pow(2.0, Double(newValue) / 1200.0)
+            core.setPitchScale(currentPitchScale)
+        }
     }
 
+    /// Playback rate. 1.0 = original, 0.5 = half speed, 2.0 = double speed.
+    /// Rubber Band's time ratio is the reciprocal of the rate.
     var rate: Float {
-        get { Float(rubberBand.rate) }
-        set { rubberBand.rate = max(1.0 / 32.0, min(32.0, Double(newValue))) }
+        get { Float(1.0 / currentTimeRatio) }
+        set {
+            let clamped = max(1.0 / 32.0, min(32.0, Double(newValue)))
+            currentTimeRatio = 1.0 / clamped
+            core.setTimeRatio(currentTimeRatio)
+        }
+    }
+
+    // MARK: - Output
+
+    /// Output volume. 0.0 = silent, 1.0 = unity, up to 2.0 (200%).
+    var volume: Float {
+        get { engine.mainMixerNode.outputVolume }
+        set { engine.mainMixerNode.outputVolume = max(0, min(2.0, newValue)) }
     }
 
     // MARK: - Graph
@@ -512,131 +292,22 @@ final class AudioEngine {
         }
     }
 
-    private func attachNodes() {
-        engine.attach(player)
-        engine.attach(pitchTime)
-        engine.attach(eq)
-    }
-
-    private func connectGraph(processingFormat format: AVAudioFormat) {
-        let mainMixer = engine.mainMixerNode
-        engine.disconnectNodeOutput(player)
-        engine.disconnectNodeOutput(pitchTime)
-        engine.disconnectNodeOutput(eq)
-
-        engine.connect(player, to: pitchTime, format: format)
-        engine.connect(pitchTime, to: eq, format: format)
-        engine.connect(eq, to: mainMixer, format: format)
-    }
-
-    private func scheduleCurrentSelection() {
-        guard let buffer = fullBuffer else { return }
-        scheduledStartFrame = selectionStartFrame
-        loopingSlice = nil
-        switch selection {
-        case .whole:
-            scheduleEndingBuffer(buffer)
-        case .region(let start, let length, let loops):
-            if loops {
-                guard let slice1 = Self.makeSlice(of: buffer, start: start, length: length),
-                      let slice2 = Self.makeSlice(of: buffer, start: start, length: length) else {
-                    return
-                }
-                loopingSlice = slice2
-                scheduleLoopSlice(slice1)
-                scheduleLoopSlice(slice2)
-            } else {
-                guard let slice = Self.makeSlice(of: buffer, start: start, length: length) else { return }
-                scheduleEndingBuffer(slice)
-            }
+    /// (Re)build the source → EQ → mixer chain for a given processing format.
+    /// The source node is recreated per load because its format is fixed at
+    /// construction and files can have different sample rates.
+    private func rebuildGraph(format: AVAudioFormat) {
+        if let old = sourceNode {
+            engine.detach(old)
         }
-    }
-
-    /// Schedules one loop iteration. The completion (fired when the slice has
-    /// finished playing) re-fills via loopCompletion so the queue never empties.
-    private func scheduleLoopSlice(_ slice: AVAudioPCMBuffer) {
-        player.scheduleBuffer(slice,
-                              at: nil,
-                              options: [],
-                              completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.loopCompletion() }
+        let core = self.core
+        let node = AVAudioSourceNode(format: format) { isSilence, _, frameCount, audioBufferList in
+            core.render(frameCount: frameCount,
+                        audioBufferList: audioBufferList,
+                        isSilence: isSilence)
         }
-    }
-
-    /// Schedules a one-shot buffer whose completion uses .dataPlayedBack —
-    /// the handler fires once the audio has actually finished coming out of
-    /// the device, not when it's merely consumed into the render pipeline.
-    /// Required so state transitions to .loaded at the right time and the
-    /// cursor doesn't keep "playing" against an empty queue.
-    private func scheduleEndingBuffer(_ buffer: AVAudioPCMBuffer) {
-        player.scheduleBuffer(buffer,
-                              at: nil,
-                              options: [],
-                              completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in self?.handlePlaybackEnded() }
-        }
-    }
-
-    /// Allocates a fresh slice copy and schedules it whenever a previous
-    /// loop iteration finishes. Reusing the same AVAudioPCMBuffer reference
-    /// produced silence on the second iteration — re-allocating works around
-    /// whatever (the player or downstream AU) was de-duping.
-    private func loopCompletion() {
-        guard state == .playing,
-              let source = fullBuffer,
-              loopingSlice != nil,
-              case .region(let start, let length, _) = selection else {
-            handlePlaybackEnded()
-            return
-        }
-        guard let slice = Self.makeSlice(of: source, start: start, length: length) else {
-            handlePlaybackEnded()
-            return
-        }
-        loopingSlice = slice
-        scheduleLoopSlice(slice)
-    }
-
-    private func handlePlaybackEnded() {
-        // scheduleBuffer completions arrive on the audio thread and we hop back
-        // to MainActor via Task. By that time a new seek() may have already
-        // scheduled fresh buffers and resumed the player, in which case the
-        // completion we're handling refers to the *previous* (now stale) slice
-        // — leave state alone. We only finalise state when the player has
-        // actually stopped producing audio.
-        guard state == .playing && !player.isPlaying else { return }
-        state = .loaded
-        // Pin the cursor at the natural end of the played selection so it
-        // doesn't snap back to scheduledStartFrame the instant state flips.
-        switch selection {
-        case .whole:
-            playheadOverride = totalFrames
-        case .region(let start, let length, _):
-            playheadOverride = start + AVAudioFramePosition(length)
-        }
-    }
-
-    private static func makeSlice(of buffer: AVAudioPCMBuffer,
-                                  start: AVAudioFramePosition,
-                                  length: AVAudioFrameCount) -> AVAudioPCMBuffer? {
-        let total = AVAudioFramePosition(buffer.frameLength)
-        let startFrame = max(0, min(total, start))
-        let endFrame = min(total, startFrame + AVAudioFramePosition(length))
-        let actualLength = AVAudioFrameCount(endFrame - startFrame)
-        guard actualLength > 0,
-              let slice = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: actualLength) else {
-            return nil
-        }
-        slice.frameLength = actualLength
-        let channels = Int(buffer.format.channelCount)
-        let frameSize = MemoryLayout<Float>.size
-        if let src = buffer.floatChannelData, let dst = slice.floatChannelData {
-            for ch in 0..<channels {
-                memcpy(dst[ch],
-                       src[ch].advanced(by: Int(startFrame)),
-                       Int(actualLength) * frameSize)
-            }
-        }
-        return slice
+        engine.attach(node)
+        engine.connect(node, to: eq, format: format)
+        engine.connect(eq, to: engine.mainMixerNode, format: format)
+        sourceNode = node
     }
 }

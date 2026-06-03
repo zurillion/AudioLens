@@ -100,10 +100,9 @@ final class MainViewController: NSViewController {
     }
 
     private func refreshPlayhead() {
-        // Query once per tick: each call into AVAudioPlayerNode.playerTime
-        // triggers AVFoundation's internal reporter, which is rate-limited to
-        // ~32 Hz. Two queries per tick at 30 Hz exceeded the limit and the
-        // console was flooded with "Message send exceeds rate-limit".
+        // Reconcile transport state in case playback reached its natural end on
+        // the audio thread, then read the playhead once and fan it out.
+        audioEngine.reconcile()
         let frame = audioEngine.currentFramePosition
         waveformView.playheadFrame = frame
         transportView.updatePlayheadDisplay(currentFrame: frame)
