@@ -300,11 +300,17 @@ final class AudioEngine {
             engine.detach(old)
         }
         let core = self.core
-        let node = AVAudioSourceNode(format: format) { isSilence, _, frameCount, audioBufferList in
+        // The render block MUST be @Sendable. Created inside this @MainActor
+        // method, an un-annotated closure is inferred main-actor-isolated, and
+        // the Swift runtime then asserts it runs on the main queue. AVFoundation
+        // calls it on the realtime audio thread instead, which trapped in
+        // _dispatch_assert_queue_fail. @Sendable forces it non-isolated.
+        let renderBlock: AVAudioSourceNodeRenderBlock = { @Sendable isSilence, _, frameCount, audioBufferList in
             core.render(frameCount: frameCount,
                         audioBufferList: audioBufferList,
                         isSilence: isSilence)
         }
+        let node = AVAudioSourceNode(format: format, renderBlock: renderBlock)
         engine.attach(node)
         engine.connect(node, to: eq, format: format)
         engine.connect(eq, to: engine.mainMixerNode, format: format)
