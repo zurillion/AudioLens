@@ -140,9 +140,54 @@ final class RubberBandAudioUnit: AUAudioUnit {
         s.timeRatio = pendingTimeRatio
         appliedPitchScale = pendingPitchScale
         appliedTimeRatio = pendingTimeRatio
+        primeStretcher(s)
         stretcher = s
 
         allocateScratch()
+    }
+
+    /// Pre-feeds silence into the stretcher so its internal lookahead /
+    /// FFT / phase buffers are full by the time the render thread starts
+    /// calling us. Without this, the first render slice has to drive
+    /// Rubber Band from cold — getSamplesRequired() returns thousands of
+    /// frames, so the pump loop runs many `process()` iterations in a single
+    /// ~10 ms render quantum. That blows the audio thread's deadline and we
+    /// get HALC "skipping cycle due to overload" plus a buzzing, broken-up
+    /// signal. Priming happens on a non-realtime thread here, so its cost
+    /// doesn't matter.
+    private func primeStretcher(_ s: RubberBandStretcher) {
+        let padFrames = max(0, s.preferredStartPad)
+        guard padFrames > 0 else { return }
+
+        let silentChannel = UnsafeMutablePointer<Float>.allocate(capacity: padFrames)
+        silentChannel.update(repeating: 0, count: padFrames)
+        defer { silentChannel.deallocate() }
+
+        let inputPtrs = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: channelCount)
+        defer { inputPtrs.deallocate() }
+        for ch in 0..<channelCount {
+            inputPtrs[ch] = UnsafePointer(silentChannel)
+        }
+        s.process(input: inputPtrs, sampleCount: padFrames, final: false)
+
+        // Drain any output the silence produced — we don't want a stretched
+        // silent prelude prepended to the first real audio.
+        var available = s.available
+        guard available > 0 else { return }
+
+        let discardCapacity = available
+        let discardChannel = UnsafeMutablePointer<Float>.allocate(capacity: discardCapacity)
+        defer { discardChannel.deallocate() }
+        let outputPtrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>?>.allocate(capacity: channelCount)
+        defer { outputPtrs.deallocate() }
+        for ch in 0..<channelCount {
+            outputPtrs[ch] = discardChannel
+        }
+        while available > 0 {
+            let pulled = s.retrieve(output: outputPtrs, sampleCount: min(available, discardCapacity))
+            if pulled <= 0 { break }
+            available = s.available
+        }
     }
 
     override func deallocateRenderResources() {
@@ -222,7 +267,11 @@ final class RubberBandAudioUnit: AUAudioUnit {
             }
 
             // Pump the stretcher until it has enough output, pulling more
-            // input from upstream as Rubber Band asks for it.
+            // input from upstream as Rubber Band asks for it. We advance a
+            // local copy of the output timestamp each iteration so upstream
+            // nodes that key off mSampleTime see a continuous progression
+            // across multiple pulls within the same render quantum.
+            var pullTimestamp = timestamp.pointee
             while stretcher.available < Int(frameCount) {
                 let needed = max(1, stretcher.samplesRequired)
                 let pullFrames = AUAudioFrameCount(min(needed, Int(self.maxPullFrames)))
@@ -233,14 +282,17 @@ final class RubberBandAudioUnit: AUAudioUnit {
                         UInt32(pullFrames) * UInt32(MemoryLayout<Float>.size)
                 }
                 var pullFlags = AudioUnitRenderActionFlags(rawValue: 0)
-                let pullStatus = pullInput(
-                    &pullFlags,
-                    timestamp,
-                    pullFrames,
-                    0,
-                    inputABL.unsafeMutablePointer
-                )
+                let pullStatus = withUnsafePointer(to: &pullTimestamp) { tsPtr in
+                    pullInput(
+                        &pullFlags,
+                        tsPtr,
+                        pullFrames,
+                        0,
+                        inputABL.unsafeMutablePointer
+                    )
+                }
                 if pullStatus != noErr { return pullStatus }
+                pullTimestamp.mSampleTime += Float64(pullFrames)
 
                 // Hand per-channel pointers to Rubber Band.
                 for ch in 0..<channelCount {
