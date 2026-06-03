@@ -24,7 +24,7 @@ final class RubberBandAudioUnit: AUAudioUnit {
         componentType: kAudioUnitType_Effect,
         componentSubType: 0x52426E64,           // 'RBnd'
         componentManufacturer: 0x416C6E73,       // 'Alns'
-        componentFlags: 0,
+        componentFlags: AudioComponentFlags.sandboxSafe.rawValue,
         componentFlagsMask: 0
     )
 

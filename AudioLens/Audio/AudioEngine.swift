@@ -111,10 +111,20 @@ final class AudioEngine {
             semaphore.signal()
         }
         semaphore.wait()
-        guard let unit = box.unit, unit.auAudioUnit is RubberBandAudioUnit else {
-            fatalError("Failed to instantiate Rubber Band AU: \(box.error?.localizedDescription ?? "unknown error")")
+        if let unit = box.unit, unit.auAudioUnit is RubberBandAudioUnit {
+            return unit
         }
-        return unit
+        let detail: String
+        if let err = box.error as NSError? {
+            detail = "domain=\(err.domain) code=\(err.code) userInfo=\(err.userInfo)"
+        } else if let err = box.error {
+            detail = err.localizedDescription
+        } else if let wrongUnit = box.unit {
+            detail = "instantiated wrong AU class: \(type(of: wrongUnit.auAudioUnit))"
+        } else {
+            detail = "no unit and no error"
+        }
+        fatalError("Failed to instantiate Rubber Band AU: \(detail)")
     }
 
     // MARK: - Loading
