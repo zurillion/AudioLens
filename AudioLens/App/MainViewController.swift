@@ -47,7 +47,7 @@ final class MainViewController: NSViewController {
             waveContainer.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
             waveContainer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             waveContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            waveContainer.heightAnchor.constraint(equalToConstant: 220),
+            waveContainer.heightAnchor.constraint(equalToConstant: 260),
 
             transport.topAnchor.constraint(equalTo: waveContainer.bottomAnchor, constant: 12),
             transport.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
@@ -78,6 +78,14 @@ final class MainViewController: NSViewController {
             guard let self else { return }
             self.audioEngine.seek(toFrame: frame)
             self.waveformView.selection = self.audioEngine.selection
+        }
+        waveformView.onLoopBoundsChanged = { [weak self] start, end in
+            self?.audioEngine.setRegionBounds(start: start, end: end)
+        }
+
+        audioEngine.onBookmarksChanged = { [weak self] in
+            guard let self else { return }
+            self.waveformView.bookmarks = self.audioEngine.bookmarks
         }
     }
 

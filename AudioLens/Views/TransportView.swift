@@ -8,6 +8,7 @@ final class TransportView: NSView {
     private let playButton = NSButton(title: "▶︎ Play", target: nil, action: nil)
     private let stopButton = NSButton(title: "■ Stop", target: nil, action: nil)
     private let loopButton = NSButton(checkboxWithTitle: "Loop", target: nil, action: nil)
+    private let bookmarkButton = NSButton()
     private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
     private let volumeSlider = NSSlider(value: 100, minValue: 0, maxValue: 200, target: nil, action: nil)
     private let volumeLabel = NSTextField(labelWithString: "100%")
@@ -54,6 +55,13 @@ final class TransportView: NSView {
         loopButton.action = #selector(toggleLoop(_:))
         loopButton.state = audioEngine.loopMode ? .on : .off
 
+        bookmarkButton.image = NSImage(systemSymbolName: "bookmark", accessibilityDescription: "Add Bookmark")
+        bookmarkButton.bezelStyle = .rounded
+        bookmarkButton.imagePosition = .imageOnly
+        bookmarkButton.target = self
+        bookmarkButton.action = #selector(addBookmark(_:))
+        bookmarkButton.toolTip = "Add a bookmark at the playhead (⌘B)"
+
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
         volumeSlider.target = self
@@ -68,7 +76,7 @@ final class TransportView: NSView {
         let volumeIcon = NSTextField(labelWithString: "🔊")
 
         let stack = NSStackView(views: [
-            playButton, stopButton, loopButton, timeLabel,
+            playButton, stopButton, loopButton, bookmarkButton, timeLabel,
             volumeIcon, volumeSlider, volumeLabel, statusLabel
         ])
         stack.orientation = .horizontal
@@ -128,5 +136,9 @@ final class TransportView: NSView {
 
     @objc private func toggleLoop(_ sender: NSButton) {
         audioEngine.loopMode = (sender.state == .on)
+    }
+
+    @objc private func addBookmark(_ sender: NSButton) {
+        audioEngine.addBookmarkAtPlayhead()
     }
 }

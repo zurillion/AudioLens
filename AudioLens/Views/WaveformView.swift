@@ -7,16 +7,33 @@ private struct BufferBox: @unchecked Sendable {
     let buffer: AVAudioPCMBuffer
 }
 
-/// Renders the loaded audio buffer with an interactive region selection and a
-/// live playhead. The min/max overview is computed off the main thread in
-/// slices and shown progressively (the waveform fills left to right as it's
-/// built), and cached on disk so reopening a file is instant.
+/// Renders the loaded audio buffer with an interactive region/loop and live
+/// playhead. Above the waveform is a strip with two draggable handles for the
+/// loop edges; below is a strip with bookmark markers. Clicking in the waveform
+/// body keeps the original behaviour (click = seek, drag = define region).
 @MainActor
 final class WaveformView: NSView {
 
-    /// Fixed overview resolution. Independent of the view width so it survives
-    /// resizes and can be cached/reused; the draw step downsamples to pixels.
-    /// `nonisolated` so the off-main overview computation can read it.
+    private enum DragMode {
+        case none
+        case waveform        // click/seek or region-define in the body
+        case loopStart
+        case loopEnd
+    }
+
+    /// Heights of the handle strips above and below the waveform body.
+    private static let topStrip: CGFloat = 22
+    private static let bottomStrip: CGFloat = 22
+    /// Hit radius (points) around a handle's x for grabbing it.
+    private static let handleHitRadius: CGFloat = 9
+
+    private static let loopColor = NSColor.systemOrange
+    private static let bookmarkColor = NSColor.systemTeal
+
+    // MARK: - Overview state
+
+    /// Fixed overview resolution, independent of view width so it survives
+    /// resizes and can be cached. `nonisolated` so off-main compute can read it.
     nonisolated private static let maxBuckets = 16_384
 
     private var mins: [Float] = []
@@ -28,7 +45,13 @@ final class WaveformView: NSView {
     private var loadTask: Task<Void, Never>?
     private var overviewGeneration = 0
 
+    // MARK: - Interaction state
+
     var selection: Selection = .whole {
+        didSet { needsDisplay = true }
+    }
+
+    var bookmarks: [AVAudioFramePosition] = [] {
         didSet { needsDisplay = true }
     }
 
@@ -39,16 +62,15 @@ final class WaveformView: NSView {
         }
     }
 
-    /// Called when the user finishes a drag that defines a new region.
+    /// Drag in the body defines a new region.
     var onRegionSelected: ((AVAudioFramePosition, AVAudioFrameCount) -> Void)?
-
-    /// Called when the user clicks without dragging — seek to that frame.
+    /// Click in the body (or on a bookmark handle) — seek.
     var onSeek: ((AVAudioFramePosition) -> Void)?
+    /// Live loop-edge drag from the top handles.
+    var onLoopBoundsChanged: ((AVAudioFramePosition, AVAudioFramePosition) -> Void)?
 
-    /// Pixel distance below which a mouse event is treated as a click (seek)
-    /// rather than a drag (region selection).
     private let clickDragThreshold: CGFloat = 4
-
+    private var dragMode: DragMode = .none
     private var dragStartPixel: CGFloat?
     private var dragCurrentPixel: CGFloat?
 
@@ -66,8 +88,14 @@ final class WaveformView: NSView {
     }
 
     override var isFlipped: Bool { true }
-
     override var acceptsFirstResponder: Bool { true }
+
+    // MARK: - Geometry
+
+    private var waveTop: CGFloat { Self.topStrip }
+    private var waveBottom: CGFloat { max(Self.topStrip, bounds.height - Self.bottomStrip) }
+    private var waveMid: CGFloat { (waveTop + waveBottom) / 2 }
+    private var waveHalfHeight: CGFloat { max(1, (waveBottom - waveTop) / 2 - 4) }
 
     // MARK: - Loading the overview
 
@@ -83,21 +111,20 @@ final class WaveformView: NSView {
         validBuckets = 0
         playheadFrame = 0
         selection = .whole
+        bookmarks = []
+        dragMode = .none
         dragStartPixel = nil
         dragCurrentPixel = nil
         needsDisplay = true
 
         let box = BufferBox(buffer: buffer)
         loadTask = Task.detached(priority: .utility) { [weak self] in
-            // Cache hit: load and display immediately.
             if let url, let cached = WaveformCache.load(for: url) {
                 await self?.apply(generation: generation,
                                   mins: cached.mins, maxs: cached.maxs,
                                   valid: cached.mins.count, total: cached.mins.count)
                 return
             }
-
-            // Otherwise compute progressively, then persist.
             let result = Self.computeOverview(buffer: box.buffer) { partialMins, partialMaxs, valid, total in
                 Task { @MainActor in
                     self?.apply(generation: generation,
@@ -112,7 +139,7 @@ final class WaveformView: NSView {
     }
 
     private func apply(generation: Int, mins: [Float], maxs: [Float], valid: Int, total: Int) {
-        guard generation == overviewGeneration else { return }   // stale compute
+        guard generation == overviewGeneration else { return }
         self.mins = mins
         self.maxs = maxs
         self.validBuckets = valid
@@ -125,37 +152,98 @@ final class WaveformView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard totalFrames > 0 else { return }
         let point = convert(event.locationInWindow, from: nil)
+
+        // Top strip: grab a loop edge handle if a region is active.
+        if point.y <= Self.topStrip, case .region(let start, let length, _) = selection {
+            let startX = frameToPixel(start)
+            let endX = frameToPixel(start + AVAudioFramePosition(length))
+            // Prefer whichever handle is closer if both are near.
+            let dStart = abs(point.x - startX)
+            let dEnd = abs(point.x - endX)
+            if dStart <= Self.handleHitRadius || dEnd <= Self.handleHitRadius {
+                dragMode = (dStart <= dEnd) ? .loopStart : .loopEnd
+                return
+            }
+        }
+
+        // Bottom strip: click a bookmark marker to seek there.
+        if point.y >= bounds.height - Self.bottomStrip {
+            if let frame = nearestBookmark(toPixel: point.x) {
+                onSeek?(frame)
+            }
+            return
+        }
+
+        // Body: original click/drag behaviour.
+        dragMode = .waveform
         dragStartPixel = point.x
         dragCurrentPixel = point.x
         needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard dragStartPixel != nil else { return }
+        guard totalFrames > 0 else { return }
         let point = convert(event.locationInWindow, from: nil)
-        dragCurrentPixel = point.x
-        needsDisplay = true
+
+        switch dragMode {
+        case .loopStart, .loopEnd:
+            guard case .region(let start, let length, let loops) = selection else { return }
+            let end = start + AVAudioFramePosition(length)
+            let dragged = pixelToFrame(point.x)
+            let newStart: AVAudioFramePosition
+            let newEnd: AVAudioFramePosition
+            if dragMode == .loopStart {
+                newStart = max(0, min(end - 1, dragged))
+                newEnd = end
+            } else {
+                newStart = start
+                newEnd = max(start + 1, min(totalFrames, dragged))
+            }
+            selection = .region(start: newStart,
+                                 length: AVAudioFrameCount(newEnd - newStart),
+                                 loops: loops)
+            onLoopBoundsChanged?(newStart, newEnd)
+        case .waveform:
+            dragCurrentPixel = point.x
+            needsDisplay = true
+        case .none:
+            break
+        }
     }
 
     override func mouseUp(with event: NSEvent) {
         defer {
+            dragMode = .none
             dragStartPixel = nil
             dragCurrentPixel = nil
             needsDisplay = true
         }
-        guard let startPx = dragStartPixel, let endPx = dragCurrentPixel, totalFrames > 0 else {
+        guard dragMode == .waveform,
+              let startPx = dragStartPixel, let endPx = dragCurrentPixel,
+              totalFrames > 0 else {
             return
         }
         let pixelDistance = abs(endPx - startPx)
         if pixelDistance < clickDragThreshold {
             onSeek?(pixelToFrame(startPx))
         } else {
-            let loPx = min(startPx, endPx)
-            let hiPx = max(startPx, endPx)
-            let lo = pixelToFrame(loPx)
-            let hi = pixelToFrame(hiPx)
+            let lo = pixelToFrame(min(startPx, endPx))
+            let hi = pixelToFrame(max(startPx, endPx))
             onRegionSelected?(lo, AVAudioFrameCount(hi - lo))
         }
+    }
+
+    private func nearestBookmark(toPixel x: CGFloat) -> AVAudioFramePosition? {
+        var best: AVAudioFramePosition?
+        var bestDistance = Self.handleHitRadius + 1
+        for frame in bookmarks {
+            let d = abs(frameToPixel(frame) - x)
+            if d < bestDistance {
+                bestDistance = d
+                best = frame
+            }
+        }
+        return best
     }
 
     // MARK: - Drawing
@@ -168,28 +256,31 @@ final class WaveformView: NSView {
         if let (lo, hi) = activeSelectionRange() {
             let x1 = frameToPixel(lo)
             let x2 = frameToPixel(hi)
-            let highlight = NSColor(srgbRed: 1.0, green: 0.85, blue: 0.35, alpha: 0.45)
-            ctx.setFillColor(highlight.cgColor)
-            ctx.fill(NSRect(x: x1, y: 0, width: max(1, x2 - x1), height: bounds.height))
+            let fill = NSColor(srgbRed: 1.0, green: 0.85, blue: 0.35, alpha: 0.45)
+            ctx.setFillColor(fill.cgColor)
+            ctx.fill(NSRect(x: x1, y: waveTop, width: max(1, x2 - x1), height: waveBottom - waveTop))
+            drawLoopEdges(ctx, startX: x1, endX: x2)
         }
+
+        drawBookmarks(ctx)
 
         if totalFrames > 0 {
             let playX = frameToPixel(playheadFrame)
             ctx.setStrokeColor(NSColor.systemRed.cgColor)
             ctx.setLineWidth(1)
-            ctx.move(to: CGPoint(x: playX, y: 0))
-            ctx.addLine(to: CGPoint(x: playX, y: bounds.height))
+            ctx.move(to: CGPoint(x: playX, y: waveTop))
+            ctx.addLine(to: CGPoint(x: playX, y: waveBottom))
             ctx.strokePath()
         }
     }
 
-    /// Draws one vertical min/max line per pixel column, downsampling the
-    /// fixed-resolution overview to the view width. Only the buckets computed
-    /// so far (`validBuckets`) are drawn, so the waveform appears progressively.
+    /// One vertical min/max line per pixel column, downsampling the overview to
+    /// the view width. Only computed buckets (`validBuckets`) are drawn, so the
+    /// waveform fills in progressively.
     private func drawWaveform(_ ctx: CGContext) {
         guard bucketCount > 0, validBuckets > 0 else { return }
-        let mid = bounds.midY
-        let halfHeight = bounds.height / 2 - 6
+        let mid = waveMid
+        let halfHeight = waveHalfHeight
         let width = bounds.width
         guard width >= 1 else { return }
 
@@ -198,10 +289,9 @@ final class WaveformView: NSView {
 
         let columns = Int(width)
         for px in 0..<columns {
-            // Bucket range covered by this pixel column.
             let b0 = bucketCount * px / columns
             let b1 = max(b0 + 1, bucketCount * (px + 1) / columns)
-            if b0 >= validBuckets { break }   // not computed yet
+            if b0 >= validBuckets { break }
             let end = min(b1, validBuckets)
             var lo: Float = 0
             var hi: Float = 0
@@ -210,20 +300,58 @@ final class WaveformView: NSView {
                 if maxs[b] > hi { hi = maxs[b] }
             }
             let x = CGFloat(px) + 0.5
-            let top = mid - CGFloat(hi) * halfHeight
-            let bottom = mid - CGFloat(lo) * halfHeight
-            ctx.move(to: CGPoint(x: x, y: top))
-            ctx.addLine(to: CGPoint(x: x, y: bottom))
+            ctx.move(to: CGPoint(x: x, y: mid - CGFloat(hi) * halfHeight))
+            ctx.addLine(to: CGPoint(x: x, y: mid - CGFloat(lo) * halfHeight))
         }
         ctx.strokePath()
     }
 
+    private func drawLoopEdges(_ ctx: CGContext, startX: CGFloat, endX: CGFloat) {
+        ctx.setStrokeColor(Self.loopColor.cgColor)
+        ctx.setLineWidth(1.5)
+        for x in [startX, endX] {
+            ctx.move(to: CGPoint(x: x, y: waveTop))
+            ctx.addLine(to: CGPoint(x: x, y: waveBottom))
+        }
+        ctx.strokePath()
+
+        // Grab handles in the top strip.
+        ctx.setFillColor(Self.loopColor.cgColor)
+        for x in [startX, endX] {
+            let handle = NSRect(x: x - 5, y: 3, width: 10, height: Self.topStrip - 7)
+            let path = NSBezierPath(roundedRect: handle, xRadius: 3, yRadius: 3)
+            path.fill()
+        }
+    }
+
+    private func drawBookmarks(_ ctx: CGContext) {
+        guard !bookmarks.isEmpty, totalFrames > 0 else { return }
+        let bottomY = bounds.height
+        for frame in bookmarks {
+            let x = frameToPixel(frame)
+            ctx.setStrokeColor(Self.bookmarkColor.withAlphaComponent(0.9).cgColor)
+            ctx.setLineWidth(1)
+            ctx.move(to: CGPoint(x: x, y: waveTop))
+            ctx.addLine(to: CGPoint(x: x, y: waveBottom))
+            ctx.strokePath()
+
+            // Flag marker in the bottom strip.
+            ctx.setFillColor(Self.bookmarkColor.cgColor)
+            let markerTop = bottomY - Self.bottomStrip + 3
+            let path = NSBezierPath()
+            path.move(to: CGPoint(x: x, y: markerTop))
+            path.line(to: CGPoint(x: x - 5, y: markerTop + 6))
+            path.line(to: CGPoint(x: x + 5, y: markerTop + 6))
+            path.close()
+            path.fill()
+        }
+    }
+
     private func activeSelectionRange() -> (AVAudioFramePosition, AVAudioFramePosition)? {
-        if let s = dragStartPixel, let e = dragCurrentPixel,
+        if dragMode == .waveform,
+           let s = dragStartPixel, let e = dragCurrentPixel,
            abs(e - s) >= clickDragThreshold {
-            let loPx = min(s, e)
-            let hiPx = max(s, e)
-            return (pixelToFrame(loPx), pixelToFrame(hiPx))
+            return (pixelToFrame(min(s, e)), pixelToFrame(max(s, e)))
         }
         switch selection {
         case .whole:
@@ -249,9 +377,6 @@ final class WaveformView: NSView {
 
     // MARK: - Overview computation (off-main)
 
-    /// Computes the min/max overview in slices, invoking `onProgress` after each
-    /// slice with the arrays-so-far. Returns the final overview, or nil if
-    /// cancelled / empty. Runs on a detached task — must not touch the view.
     nonisolated private static func computeOverview(
         buffer: AVAudioPCMBuffer,
         onProgress: ([Float], [Float], Int, Int) -> Void
