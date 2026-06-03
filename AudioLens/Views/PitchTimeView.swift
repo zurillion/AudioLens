@@ -5,12 +5,17 @@ final class PitchTimeView: NSView {
 
     private let audioEngine: AudioEngine
 
+    private let tuningStepper = NSStepper()
+    private let tuningLabel = NSTextField(labelWithString: "440.00 Hz")
     private let semitoneStepper = NSStepper()
     private let semitoneLabel = NSTextField(labelWithString: "0 st")
     private let centSlider = NSSlider(value: 0, minValue: -100, maxValue: 100, target: nil, action: nil)
-    private let centLabel = NSTextField(labelWithString: "0 cents")
+    private let centLabel = NSTextField(labelWithString: "0.0 cents")
     private let rateSlider = NSSlider(value: 1.0, minValue: 0.25, maxValue: 4.0, target: nil, action: nil)
     private let rateLabel = NSTextField(labelWithString: "1.00×")
+
+    /// Reference frequency we measure the tuning against (A4).
+    private static let referenceHz: Double = 440.0
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
@@ -26,6 +31,16 @@ final class PitchTimeView: NSView {
     }
 
     private func setupSubviews() {
+        // The tuning range mirrors the ±24 semitone range, so a semitone push
+        // that takes the equivalent Hz to ~110 (A2) or ~1760 (A6) still has a
+        // valid display position.
+        tuningStepper.minValue = 110.0
+        tuningStepper.maxValue = 1760.0
+        tuningStepper.increment = 0.5
+        tuningStepper.doubleValue = Self.referenceHz
+        tuningStepper.target = self
+        tuningStepper.action = #selector(tuningChanged(_:))
+
         semitoneStepper.minValue = -24
         semitoneStepper.maxValue = 24
         semitoneStepper.increment = 1
@@ -40,11 +55,16 @@ final class PitchTimeView: NSView {
         rateSlider.action = #selector(rateChanged(_:))
         rateSlider.isContinuous = true
 
+        for label in [tuningLabel, semitoneLabel, centLabel, rateLabel] {
+            label.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        }
+
+        let tuningRow = labeledRow(title: "Tuning (A4)", controls: [tuningStepper, tuningLabel])
         let semitoneRow = labeledRow(title: "Semitones", controls: [semitoneStepper, semitoneLabel])
         let centRow = labeledRow(title: "Cents", controls: [centSlider, centLabel])
         let rateRow = labeledRow(title: "Rate", controls: [rateSlider, rateLabel])
 
-        let stack = NSStackView(views: [semitoneRow, centRow, rateRow])
+        let stack = NSStackView(views: [tuningRow, semitoneRow, centRow, rateRow])
         stack.orientation = .vertical
         stack.spacing = 8
         stack.alignment = .leading
@@ -61,7 +81,7 @@ final class PitchTimeView: NSView {
 
     private func labeledRow(title: String, controls: [NSView]) -> NSView {
         let label = NSTextField(labelWithString: title)
-        label.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        label.widthAnchor.constraint(equalToConstant: 100).isActive = true
         let stack = NSStackView(views: [label] + controls)
         stack.orientation = .horizontal
         stack.spacing = 8
@@ -69,16 +89,29 @@ final class PitchTimeView: NSView {
         return stack
     }
 
+    // MARK: - Actions
+
+    /// All three pitch controls (tuning Hz, semitones, fine cents) are views
+    /// of the same total pitch offset. Each handler computes the new total
+    /// and routes through `applyTotalCents`, which writes the engine and
+    /// refreshes the other displays. `source` controls how aggressively the
+    /// semis/fine pair is renormalised — a tuning change canonicalises them
+    /// (semis = round, fine = residual); semis/fine edits leave the other
+    /// alone so the user keeps the value they entered.
+    @objc private func tuningChanged(_ sender: NSStepper) {
+        let hz = sender.doubleValue
+        let totalCents = 1200.0 * log2(hz / Self.referenceHz)
+        applyTotalCents(totalCents, source: .tuning)
+    }
+
     @objc private func semitoneChanged(_ sender: NSStepper) {
-        let semitones = sender.intValue
-        semitoneLabel.stringValue = "\(semitones) st"
-        applyPitch()
+        let totalCents = Double(sender.integerValue) * 100.0 + centSlider.doubleValue
+        applyTotalCents(totalCents, source: .semitone)
     }
 
     @objc private func centChanged(_ sender: NSSlider) {
-        let cents = Int(sender.doubleValue.rounded())
-        centLabel.stringValue = "\(cents) cents"
-        applyPitch()
+        let totalCents = Double(semitoneStepper.integerValue) * 100.0 + sender.doubleValue
+        applyTotalCents(totalCents, source: .cents)
     }
 
     @objc private func rateChanged(_ sender: NSSlider) {
@@ -87,8 +120,32 @@ final class PitchTimeView: NSView {
         audioEngine.rate = Float(rate)
     }
 
-    private func applyPitch() {
-        let totalCents = Float(semitoneStepper.intValue * 100) + Float(centSlider.doubleValue)
-        audioEngine.pitchCents = totalCents
+    // MARK: - Synchronisation
+
+    private enum ChangeSource {
+        case tuning, semitone, cents
+    }
+
+    private func applyTotalCents(_ totalCents: Double, source: ChangeSource) {
+        audioEngine.pitchCents = Float(totalCents)
+
+        let hz = Self.referenceHz * pow(2.0, totalCents / 1200.0)
+        tuningStepper.doubleValue = hz
+        tuningLabel.stringValue = String(format: "%.2f Hz", hz)
+
+        switch source {
+        case .tuning:
+            // Renormalise into canonical (round-to-nearest semitone, residual cents).
+            let semis = max(-24, min(24, Int((totalCents / 100.0).rounded(.toNearestOrEven))))
+            let fine = totalCents - Double(semis) * 100.0
+            semitoneStepper.integerValue = semis
+            semitoneLabel.stringValue = "\(semis) st"
+            centSlider.doubleValue = fine
+            centLabel.stringValue = String(format: "%.1f cents", fine)
+        case .semitone:
+            semitoneLabel.stringValue = "\(semitoneStepper.integerValue) st"
+        case .cents:
+            centLabel.stringValue = String(format: "%.1f cents", centSlider.doubleValue)
+        }
     }
 }
