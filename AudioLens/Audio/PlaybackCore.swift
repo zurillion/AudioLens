@@ -31,7 +31,9 @@ final class PlaybackCore: @unchecked Sendable {
         var stretcher: RubberBandStretcher?
     }
 
-    private let lock = OSAllocatedUnfairLock(initialState: Control())
+    // Control holds non-Sendable references (buffer, stretcher), so we use the
+    // unchecked initializer; the lock itself provides the exclusion guarantee.
+    private let lock = OSAllocatedUnfairLock(uncheckedState: Control())
 
     private let maxChannels = 2
     private let inPtrs: UnsafeMutablePointer<UnsafePointer<Float>?>
@@ -83,7 +85,7 @@ final class PlaybackCore: @unchecked Sendable {
     }
 
     func setPlaying(_ playing: Bool) {
-        lock.withLock { c in
+        lock.withLockUnchecked { c in
             if playing { c.finished = false }
             c.playing = playing
         }
@@ -91,7 +93,7 @@ final class PlaybackCore: @unchecked Sendable {
 
     func setRegion(start: AVAudioFramePosition, end: AVAudioFramePosition,
                    looping: Bool, seekToStart: Bool) {
-        lock.withLock { c in
+        lock.withLockUnchecked { c in
             c.regionStart = start
             c.regionEnd = end
             c.looping = looping
@@ -105,11 +107,11 @@ final class PlaybackCore: @unchecked Sendable {
     }
 
     func setLooping(_ looping: Bool) {
-        lock.withLock { $0.looping = looping }
+        lock.withLockUnchecked { $0.looping = looping }
     }
 
     func seek(to frame: AVAudioFramePosition) {
-        lock.withLock { c in
+        lock.withLockUnchecked { c in
             c.cursor = frame
             c.playhead = frame
             c.resetRequest = true
@@ -117,11 +119,11 @@ final class PlaybackCore: @unchecked Sendable {
         }
     }
 
-    func setPitchScale(_ scale: Double) { lock.withLock { $0.pitchScale = scale } }
-    func setTimeRatio(_ ratio: Double) { lock.withLock { $0.timeRatio = ratio } }
+    func setPitchScale(_ scale: Double) { lock.withLockUnchecked { $0.pitchScale = scale } }
+    func setTimeRatio(_ ratio: Double) { lock.withLockUnchecked { $0.timeRatio = ratio } }
 
-    var playhead: AVAudioFramePosition { lock.withLock { $0.playhead } }
-    var isFinished: Bool { lock.withLock { $0.finished } }
+    var playhead: AVAudioFramePosition { lock.withLockUnchecked { $0.playhead } }
+    var isFinished: Bool { lock.withLockUnchecked { $0.finished } }
 
     // MARK: - Render (audio thread)
 
