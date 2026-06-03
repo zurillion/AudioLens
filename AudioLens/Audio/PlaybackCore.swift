@@ -56,6 +56,11 @@ final class PlaybackCore: @unchecked Sendable {
     /// render thread unbounded.
     private let iterationLimit = 64
 
+    /// DIAGNOSTIC: when true, the render block bypasses Rubber Band and copies
+    /// input straight to output, to isolate data-plumbing bugs from
+    /// stretcher-driving bugs. Set back to false for normal operation.
+    private static let bypassStretcher = true
+
     init() {
         inPtrs = UnsafeMutablePointer<UnsafePointer<Float>?>.allocate(capacity: maxChannels)
         outPtrs = UnsafeMutablePointer<UnsafeMutablePointer<Float>?>.allocate(capacity: maxChannels)
@@ -199,6 +204,53 @@ final class PlaybackCore: @unchecked Sendable {
         let frameCountInt = Int(frameCount)
         var inputExhausted = false
         var iterations = 0
+
+        // DIAGNOSTIC passthrough: copy input straight to output (no Rubber
+        // Band) to verify the AVAudioSourceNode data plumbing — format,
+        // channel layout, cursor/region/loop, output mapping — in isolation.
+        // If this is clean, the distortion is in how we drive Rubber Band.
+        if Self.bypassStretcher {
+            for ch in 0..<useChannels {
+                outPtrs[ch] = outABL[ch].mData?.assumingMemoryBound(to: Float.self)
+            }
+            let out0 = outPtrs[0]
+            let out1 = useChannels > 1 ? outPtrs[1] : nil
+            var produced = 0
+            while produced < frameCountInt {
+                if cursor >= regEnd {
+                    if snap.looping {
+                        if regEnd <= regStart { break }
+                        cursor = regStart
+                    } else {
+                        inputExhausted = true
+                        break
+                    }
+                }
+                out0?[produced] = channelBases.0[Int(cursor)]
+                out1?[produced] = channelBases.1[Int(cursor)]
+                cursor += 1
+                produced += 1
+            }
+            if produced < frameCountInt {
+                out0?.advanced(by: produced).update(repeating: 0, count: frameCountInt - produced)
+                out1?.advanced(by: produced).update(repeating: 0, count: frameCountInt - produced)
+            }
+            if outChannels > useChannels {
+                for ch in useChannels..<outChannels {
+                    if let data = outABL[ch].mData { memset(data, 0, Int(outABL[ch].mDataByteSize)) }
+                }
+            }
+            isSilence.pointee = false
+            let endedNow = inputExhausted
+            lock.withLockUnchecked { c in
+                if c.generation == snap.generation {
+                    c.cursor = cursor
+                    c.playhead = cursor
+                    if endedNow { c.playing = false; c.finished = true }
+                }
+            }
+            return noErr
+        }
 
         // Feed input until the stretcher can yield a full output slice, looping
         // at the region end or stopping at the end of a non-looping region.
