@@ -293,6 +293,16 @@ final class AudioEngine {
         if bookmarks.count != before { onBookmarksChanged?() }
     }
 
+    /// Move the bookmark nearest `from` to `to`. Used by dragging a marker.
+    func moveBookmark(from: AVAudioFramePosition, to: AVAudioFramePosition) {
+        guard let idx = bookmarks.firstIndex(where: { abs($0 - from) < bookmarkTolerance }) else { return }
+        bookmarks.remove(at: idx)
+        let clamped = max(0, min(totalFrames, to))
+        if !bookmarks.contains(clamped) { bookmarks.append(clamped) }
+        bookmarks.sort()
+        onBookmarksChanged?()
+    }
+
     func clearBookmarks() {
         guard !bookmarks.isEmpty else { return }
         bookmarks.removeAll()
@@ -303,18 +313,22 @@ final class AudioEngine {
         seek(toFrame: frame)
     }
 
+    /// Up arrow: jump to the next bookmark after the playhead, wrapping to the
+    /// first once past the last.
     func goToNextBookmark() {
+        guard !bookmarks.isEmpty else { return }
         let cur = currentFramePosition
-        if let next = bookmarks.first(where: { $0 > cur + bookmarkTolerance }) {
-            seek(toFrame: next)
-        }
+        let target = bookmarks.first(where: { $0 > cur + bookmarkTolerance }) ?? bookmarks.first!
+        seek(toFrame: target)
     }
 
+    /// Down arrow: jump to the previous bookmark before the playhead, wrapping
+    /// to the last once before the first.
     func goToPreviousBookmark() {
+        guard !bookmarks.isEmpty else { return }
         let cur = currentFramePosition
-        if let prev = bookmarks.last(where: { $0 < cur - bookmarkTolerance }) {
-            seek(toFrame: prev)
-        }
+        let target = bookmarks.last(where: { $0 < cur - bookmarkTolerance }) ?? bookmarks.last!
+        seek(toFrame: target)
     }
 
     func goToFirstBookmark() {

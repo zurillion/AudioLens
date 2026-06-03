@@ -39,7 +39,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
 
         let window = AudioLensWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )

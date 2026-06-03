@@ -82,6 +82,12 @@ final class MainViewController: NSViewController {
         waveformView.onLoopBoundsChanged = { [weak self] start, end in
             self?.audioEngine.setRegionBounds(start: start, end: end)
         }
+        waveformView.onBookmarkMoved = { [weak self] from, to in
+            self?.audioEngine.moveBookmark(from: from, to: to)
+        }
+        waveformView.onBookmarkDeleted = { [weak self] frame in
+            self?.audioEngine.removeBookmark(at: frame)
+        }
 
         audioEngine.onBookmarksChanged = { [weak self] in
             guard let self else { return }

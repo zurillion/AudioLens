@@ -19,6 +19,7 @@ final class WaveformView: NSView {
         case waveform        // click/seek or region-define in the body
         case loopStart
         case loopEnd
+        case bookmark        // dragging a bookmark marker
     }
 
     /// Heights of the handle strips above and below the waveform body.
@@ -68,11 +69,17 @@ final class WaveformView: NSView {
     var onSeek: ((AVAudioFramePosition) -> Void)?
     /// Live loop-edge drag from the top handles.
     var onLoopBoundsChanged: ((AVAudioFramePosition, AVAudioFramePosition) -> Void)?
+    /// A bookmark marker dragged to a new position (from, to).
+    var onBookmarkMoved: ((AVAudioFramePosition, AVAudioFramePosition) -> Void)?
+    /// Option-click on a bookmark marker — delete it.
+    var onBookmarkDeleted: ((AVAudioFramePosition) -> Void)?
 
     private let clickDragThreshold: CGFloat = 4
     private var dragMode: DragMode = .none
     private var dragStartPixel: CGFloat?
     private var dragCurrentPixel: CGFloat?
+    private var draggedBookmarkFrame: AVAudioFramePosition = 0
+    private var bookmarkDidMove = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -166,10 +173,18 @@ final class WaveformView: NSView {
             }
         }
 
-        // Bottom strip: click a bookmark marker to seek there.
+        // Bottom strip: option-click a marker to delete it; otherwise begin a
+        // bookmark drag (a plain click without movement seeks there on mouseUp).
         if point.y >= bounds.height - Self.bottomStrip {
             if let frame = nearestBookmark(toPixel: point.x) {
-                onSeek?(frame)
+                if event.modifierFlags.contains(.option) {
+                    onBookmarkDeleted?(frame)
+                } else {
+                    dragMode = .bookmark
+                    draggedBookmarkFrame = frame
+                    dragStartPixel = point.x
+                    bookmarkDidMove = false
+                }
             }
             return
         }
@@ -203,6 +218,15 @@ final class WaveformView: NSView {
                                  length: AVAudioFrameCount(newEnd - newStart),
                                  loops: loops)
             onLoopBoundsChanged?(newStart, newEnd)
+        case .bookmark:
+            if let start = dragStartPixel, abs(point.x - start) >= clickDragThreshold {
+                bookmarkDidMove = true
+            }
+            if bookmarkDidMove {
+                let newFrame = max(0, min(totalFrames, pixelToFrame(point.x)))
+                onBookmarkMoved?(draggedBookmarkFrame, newFrame)
+                draggedBookmarkFrame = newFrame
+            }
         case .waveform:
             dragCurrentPixel = point.x
             needsDisplay = true
@@ -212,13 +236,19 @@ final class WaveformView: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
+        let mode = dragMode
         defer {
             dragMode = .none
             dragStartPixel = nil
             dragCurrentPixel = nil
             needsDisplay = true
         }
-        guard dragMode == .waveform,
+        // A bookmark marker clicked without dragging seeks to it.
+        if mode == .bookmark {
+            if !bookmarkDidMove { onSeek?(draggedBookmarkFrame) }
+            return
+        }
+        guard mode == .waveform,
               let startPx = dragStartPixel, let endPx = dragCurrentPixel,
               totalFrames > 0 else {
             return

@@ -108,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // keyboard shortcuts live in KeyBindings (Preferences). The list of
         // bookmarks is filled on open by the delegate.
         let bookmarksMenuItem = NSMenuItem()
+        bookmarksMenuItem.title = "Bookmarks"
         mainMenu.addItem(bookmarksMenuItem)
         let bookmarksMenu = NSMenu(title: "Bookmarks")
         bookmarksMenu.autoenablesItems = false

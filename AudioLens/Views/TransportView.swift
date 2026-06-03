@@ -56,8 +56,9 @@ final class TransportView: NSView {
         loopButton.state = audioEngine.loopMode ? .on : .off
 
         bookmarkButton.image = NSImage(systemSymbolName: "bookmark", accessibilityDescription: "Add Bookmark")
+        bookmarkButton.title = "+"
+        bookmarkButton.imagePosition = .imageRight
         bookmarkButton.bezelStyle = .rounded
-        bookmarkButton.imagePosition = .imageOnly
         bookmarkButton.target = self
         bookmarkButton.action = #selector(addBookmark(_:))
         bookmarkButton.toolTip = "Add a bookmark at the playhead (⌘B)"
