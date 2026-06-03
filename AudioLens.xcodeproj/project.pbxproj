@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		ACD3A0632FCEFF7400E6BCC2 /* SFBAudioEngine in Frameworks */ = {isa = PBXBuildFile; productRef = ACD3A0622FCEFF7400E6BCC2 /* SFBAudioEngine */; };
+		ACD3A06E2FD082C900E6BCC2 /* CRubberBand in Frameworks */ = {isa = PBXBuildFile; productRef = ACD3A06D2FD082C900E6BCC2 /* CRubberBand */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +25,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				ACD3A0632FCEFF7400E6BCC2 /* SFBAudioEngine in Frameworks */,
+				ACD3A06E2FD082C900E6BCC2 /* CRubberBand in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -67,6 +69,7 @@
 			name = AudioLens;
 			packageProductDependencies = (
 				ACD3A0622FCEFF7400E6BCC2 /* SFBAudioEngine */,
+				ACD3A06D2FD082C900E6BCC2 /* CRubberBand */,
 			);
 			productName = AudioLens;
 			productReference = A3A3A3A3A3A3A3A3A3A3A3A3 /* AudioLens.app */;
@@ -99,6 +102,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				ACD3A0612FCEFF7400E6BCC2 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */,
+				ACD3A06C2FD082C900E6BCC2 /* XCLocalSwiftPackageReference "Packages/RubberBand" */,
 			);
 			productRefGroup = A6A6A6A6A6A6A6A6A6A6A6A6 /* Products */;
 			projectDirPath = "";
@@ -335,6 +339,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		ACD3A06C2FD082C900E6BCC2 /* XCLocalSwiftPackageReference "Packages/RubberBand" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/RubberBand;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		ACD3A0612FCEFF7400E6BCC2 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -351,6 +362,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = ACD3A0612FCEFF7400E6BCC2 /* XCRemoteSwiftPackageReference "SFBAudioEngine" */;
 			productName = SFBAudioEngine;
+		};
+		ACD3A06D2FD082C900E6BCC2 /* CRubberBand */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CRubberBand;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
