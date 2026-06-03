@@ -1,6 +1,4 @@
 import AVFoundation
-
-#if canImport(CRubberBand)
 import CRubberBand
 
 /// Swift wrapper around Rubber Band's C API. Owns the underlying
@@ -109,5 +107,3 @@ final class RubberBandStretcher {
         Int(rubberband_retrieve(state, output, UInt32(sampleCount)))
     }
 }
-
-#endif  // canImport(CRubberBand)

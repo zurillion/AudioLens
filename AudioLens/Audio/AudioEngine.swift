@@ -66,10 +66,10 @@ final class AudioEngine {
 
     let engine = AVAudioEngine()
     let player = AVAudioPlayerNode()
-    /// Placeholder pitch/time node. Will be replaced by a custom AUAudioUnit
-    /// wrapping Rubber Band for high-quality stretching beyond ±2 semitones
-    /// or ±20% rate. AVAudioUnitTimePitch is fine as a stand-in while wiring UI.
-    let pitchTime = AVAudioUnitTimePitch()
+    /// Custom AUAudioUnit wrapping Rubber Band's R3 engine. Connected in the
+    /// graph between `player` and `eq`. Latency is reported by the AU so
+    /// AVAudioEngine compensates upstream timing automatically.
+    let pitchTime: AVAudioUnit
     let eq: AVAudioUnitEQ
 
     static let eqBandFrequencies: [Float] = [
@@ -79,8 +79,42 @@ final class AudioEngine {
 
     init() {
         self.eq = AVAudioUnitEQ(numberOfBands: Self.eqBandFrequencies.count)
+        // Trigger one-time AU registration before the instantiate call below
+        // can find the component description.
+        _ = RubberBandAudioUnit.registerOnce
+        self.pitchTime = Self.makeRubberBandUnit()
         configureEQ()
         attachNodes()
+    }
+
+    private var rubberBand: RubberBandAudioUnit {
+        // Safe: makeRubberBandUnit() enforces this cast and the property is
+        // only set there.
+        pitchTime.auAudioUnit as! RubberBandAudioUnit
+    }
+
+    /// Synchronously instantiate the in-process Rubber Band AU. AVAudioUnit's
+    /// completion-handler form is the public API; we serialise around it with
+    /// a semaphore so AudioEngine.init() stays synchronous. The blocking
+    /// window is a one-shot at app startup.
+    private static func makeRubberBandUnit() -> AVAudioUnit {
+        final class Box: @unchecked Sendable {
+            var unit: AVAudioUnit?
+            var error: (any Error)?
+        }
+        let box = Box()
+        let semaphore = DispatchSemaphore(value: 0)
+        AVAudioUnit.instantiate(with: RubberBandAudioUnit.componentDescription,
+                                options: []) { unit, error in
+            box.unit = unit
+            box.error = error
+            semaphore.signal()
+        }
+        semaphore.wait()
+        guard let unit = box.unit, unit.auAudioUnit is RubberBandAudioUnit else {
+            fatalError("Failed to instantiate Rubber Band AU: \(box.error?.localizedDescription ?? "unknown error")")
+        }
+        return unit
     }
 
     // MARK: - Loading
@@ -445,13 +479,13 @@ final class AudioEngine {
     // MARK: - Pitch & time
 
     var pitchCents: Float {
-        get { pitchTime.pitch }
-        set { pitchTime.pitch = newValue }
+        get { Float(rubberBand.pitchCents) }
+        set { rubberBand.pitchCents = Double(newValue) }
     }
 
     var rate: Float {
-        get { pitchTime.rate }
-        set { pitchTime.rate = max(1.0 / 32.0, min(32.0, newValue)) }
+        get { Float(rubberBand.rate) }
+        set { rubberBand.rate = max(1.0 / 32.0, min(32.0, Double(newValue))) }
     }
 
     // MARK: - Graph

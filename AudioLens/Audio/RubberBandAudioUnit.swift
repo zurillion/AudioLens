@@ -1,6 +1,4 @@
 import AVFoundation
-
-#if canImport(CRubberBand)
 import CRubberBand
 
 /// Custom AUAudioUnit that wraps RubberBandStretcher for real-time pitch
@@ -276,5 +274,3 @@ final class RubberBandAudioUnit: AUAudioUnit {
         }
     }
 }
-
-#endif  // canImport(CRubberBand)
