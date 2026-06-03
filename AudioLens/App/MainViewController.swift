@@ -89,9 +89,10 @@ final class MainViewController: NSViewController {
 
     private func startPlayheadTimer() {
         playheadTimer?.invalidate()
-        // 30 Hz is smooth enough for a playhead line; we can switch to
-        // CADisplayLink when the Metal waveform renderer lands.
-        playheadTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // 24 Hz: smooth enough for the playhead, comfortably under
+        // AVFoundation's internal 32 Hz reporting rate-limit. We'll switch to
+        // CADisplayLink (vsync-locked) when the Metal waveform renderer lands.
+        playheadTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 24.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshPlayhead()
             }
@@ -99,8 +100,13 @@ final class MainViewController: NSViewController {
     }
 
     private func refreshPlayhead() {
-        waveformView.playheadFrame = audioEngine.currentFramePosition
-        transportView.updatePlayheadDisplay()
+        // Query once per tick: each call into AVAudioPlayerNode.playerTime
+        // triggers AVFoundation's internal reporter, which is rate-limited to
+        // ~32 Hz. Two queries per tick at 30 Hz exceeded the limit and the
+        // console was flooded with "Message send exceeds rate-limit".
+        let frame = audioEngine.currentFramePosition
+        waveformView.playheadFrame = frame
+        transportView.updatePlayheadDisplay(currentFrame: frame)
     }
 
     func didLoadAudio() {

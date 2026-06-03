@@ -27,11 +27,14 @@ final class TransportView: NSView {
     func refresh() {
         statusLabel.stringValue = audioEngine.sourceURL?.lastPathComponent ?? "No file loaded"
         loopButton.state = audioEngine.loopMode ? .on : .off
-        updateTimeLabel()
+        updateTimeLabel(currentFrame: audioEngine.currentFramePosition)
     }
 
-    func updatePlayheadDisplay() {
-        updateTimeLabel()
+    /// Called from the playhead timer; receives the current frame pre-computed
+    /// by the caller so we don't query AVAudioPlayerNode.playerTime twice per
+    /// tick (which used to trip AVFoundation's 32 Hz reporting rate-limit).
+    func updatePlayheadDisplay(currentFrame: AVAudioFramePosition) {
+        updateTimeLabel(currentFrame: currentFrame)
         // Keep the play button label in sync with engine state in case the
         // user paused via another path (e.g. playback finished).
         switch audioEngine.state {
@@ -81,9 +84,9 @@ final class TransportView: NSView {
         ])
     }
 
-    private func updateTimeLabel() {
+    private func updateTimeLabel(currentFrame: AVAudioFramePosition) {
         let rate = audioEngine.sampleRate
-        let current = Double(audioEngine.currentFramePosition) / rate
+        let current = Double(currentFrame) / rate
         let total = Double(audioEngine.totalFrames) / rate
         timeLabel.stringValue = "\(Self.formatTime(current)) / \(Self.formatTime(total))"
     }
