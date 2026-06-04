@@ -20,6 +20,8 @@ final class WaveformView: NSView {
         case loopStart
         case loopEnd
         case bookmark        // dragging a bookmark marker
+        case trimStart       // dragging the left trim marker
+        case trimEnd         // dragging the right trim marker
     }
 
     /// Heights of the handle strips above and below the waveform body.
@@ -30,6 +32,7 @@ final class WaveformView: NSView {
 
     private static let loopColor = NSColor.systemOrange
     private static let bookmarkColor = NSColor.systemTeal
+    private static let trimColor = NSColor.systemGray
 
     // MARK: - Overview state
 
@@ -53,6 +56,15 @@ final class WaveformView: NSView {
     }
 
     var bookmarks: [AVAudioFramePosition] = [] {
+        didSet { needsDisplay = true }
+    }
+
+    /// Trim markers (always present). Everything left of `trimStartFrame` and
+    /// right of `trimEndFrame` is greyed out and inaccessible.
+    var trimStartFrame: AVAudioFramePosition = 0 {
+        didSet { needsDisplay = true }
+    }
+    var trimEndFrame: AVAudioFramePosition = 0 {
         didSet { needsDisplay = true }
     }
 
@@ -80,6 +92,8 @@ final class WaveformView: NSView {
     var onBookmarkDeleted: ((AVAudioFramePosition) -> Void)?
     /// Command-click on a bookmark marker — rename it.
     var onBookmarkRenameRequested: ((AVAudioFramePosition) -> Void)?
+    /// Live trim-marker drag (start, end).
+    var onTrimChanged: ((AVAudioFramePosition, AVAudioFramePosition) -> Void)?
 
     private let clickDragThreshold: CGFloat = 6
     private var dragMode: DragMode = .none
@@ -128,6 +142,8 @@ final class WaveformView: NSView {
         let generation = overviewGeneration
 
         totalFrames = AVAudioFramePosition(buffer.frameLength)
+        trimStartFrame = 0
+        trimEndFrame = totalFrames
         mins = []
         maxs = []
         bucketCount = 0
@@ -176,15 +192,30 @@ final class WaveformView: NSView {
         guard totalFrames > 0 else { return }
         let point = convert(event.locationInWindow, from: nil)
 
-        // Top strip: grab a loop edge handle if a region is active.
-        if point.y <= Self.topStrip, case .region(let start, let length, _) = selection {
-            let startX = frameToPixel(start)
-            let endX = frameToPixel(start + AVAudioFramePosition(length))
-            // Prefer whichever handle is closer if both are near.
-            let dStart = abs(point.x - startX)
-            let dEnd = abs(point.x - endX)
-            if dStart <= Self.handleHitRadius || dEnd <= Self.handleHitRadius {
-                dragMode = (dStart <= dEnd) ? .loopStart : .loopEnd
+        // Top strip: grab the nearest handle. The two always-present trim
+        // handles plus, when a region is active, the two loop-edge handles all
+        // live here; pick whichever is closest within the hit radius. Loop
+        // handles are listed first so they win an exact tie with a trim edge.
+        if point.y <= Self.topStrip {
+            var candidates: [(DragMode, CGFloat)] = []
+            if case .region(let start, let length, _) = selection {
+                candidates.append((.loopStart, frameToPixel(start)))
+                candidates.append((.loopEnd, frameToPixel(start + AVAudioFramePosition(length))))
+            }
+            candidates.append((.trimStart, frameToPixel(trimStartFrame)))
+            candidates.append((.trimEnd, frameToPixel(trimEndFrame)))
+
+            var best: DragMode?
+            var bestDistance = Self.handleHitRadius + 1
+            for (mode, x) in candidates {
+                let d = abs(point.x - x)
+                if d <= Self.handleHitRadius && d < bestDistance {
+                    bestDistance = d
+                    best = mode
+                }
+            }
+            if let best {
+                dragMode = best
                 return
             }
         }
@@ -225,17 +256,28 @@ final class WaveformView: NSView {
             let dragged = pixelToFrame(point.x)
             let newStart: AVAudioFramePosition
             let newEnd: AVAudioFramePosition
+            // Loop edges can't escape the trimmed, accessible range.
             if dragMode == .loopStart {
-                newStart = max(0, min(end - 1, dragged))
+                newStart = max(trimStartFrame, min(end - 1, dragged))
                 newEnd = end
             } else {
                 newStart = start
-                newEnd = max(start + 1, min(totalFrames, dragged))
+                newEnd = max(start + 1, min(trimEndFrame, dragged))
             }
             selection = .region(start: newStart,
                                  length: AVAudioFrameCount(newEnd - newStart),
                                  loops: loops)
             onLoopBoundsChanged?(newStart, newEnd)
+        case .trimStart:
+            // Left trim marker; can't pass the right one.
+            let newStart = max(0, min(trimEndFrame - 1, pixelToFrame(point.x)))
+            trimStartFrame = newStart
+            onTrimChanged?(newStart, trimEndFrame)
+        case .trimEnd:
+            // Right trim marker; can't pass the left one.
+            let newEnd = min(totalFrames, max(trimStartFrame + 1, pixelToFrame(point.x)))
+            trimEndFrame = newEnd
+            onTrimChanged?(trimStartFrame, newEnd)
         case .bookmark:
             if let start = dragStartPixel, abs(point.x - start) >= clickDragThreshold {
                 bookmarkDidMove = true
@@ -300,6 +342,7 @@ final class WaveformView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         drawWaveform(ctx)
+        drawTrim(ctx)
 
         if let (lo, hi) = activeSelectionRange() {
             let x1 = frameToPixel(lo)
@@ -362,6 +405,44 @@ final class WaveformView: NSView {
             ctx.addLine(to: CGPoint(x: x, y: mid - CGFloat(lo) * halfHeight))
         }
         ctx.strokePath()
+    }
+
+    /// Grey out the inaccessible head/tail outside the trim markers and draw the
+    /// two always-present trim boundary lines plus their top-strip grab handles.
+    private func drawTrim(_ ctx: CGContext) {
+        guard totalFrames > 0 else { return }
+        let startX = frameToPixel(trimStartFrame)
+        let endX = frameToPixel(trimEndFrame)
+        let top = waveTop
+        let height = waveBottom - waveTop
+
+        // Wash the trimmed regions toward the background so the waveform there
+        // reads as inaccessible. Background-tinted so it works in light & dark.
+        let overlay = NSColor.textBackgroundColor.withAlphaComponent(0.72)
+        ctx.setFillColor(overlay.cgColor)
+        if startX > 0 {
+            ctx.fill(NSRect(x: 0, y: top, width: startX, height: height))
+        }
+        if endX < bounds.width {
+            ctx.fill(NSRect(x: endX, y: top, width: bounds.width - endX, height: height))
+        }
+
+        // Boundary lines spanning the waveform band.
+        ctx.setStrokeColor(Self.trimColor.cgColor)
+        ctx.setLineWidth(1.5)
+        for x in [startX, endX] {
+            ctx.move(to: CGPoint(x: x, y: waveTop))
+            ctx.addLine(to: CGPoint(x: x, y: waveBottom))
+        }
+        ctx.strokePath()
+
+        // Grab handles in the top strip, slightly slimmer than the loop ones.
+        ctx.setFillColor(Self.trimColor.cgColor)
+        for x in [startX, endX] {
+            let handle = NSRect(x: x - 4, y: 3, width: 8, height: Self.topStrip - 7)
+            let path = NSBezierPath(roundedRect: handle, xRadius: 2, yRadius: 2)
+            path.fill()
+        }
     }
 
     private func drawLoopEdges(_ ctx: CGContext, startX: CGFloat, endX: CGFloat) {

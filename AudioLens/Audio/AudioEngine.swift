@@ -27,6 +27,12 @@ final class AudioEngine {
     private(set) var fullBuffer: AVAudioPCMBuffer?
     private(set) var selection: Selection = .whole
 
+    /// Trim bounds: the accessible range of the file. Everything before
+    /// `trimStart` and after `trimEnd` is unreachable for playback, seeking,
+    /// regions, and bookmarks. Reset to [0, totalFrames] on load.
+    private(set) var trimStart: AVAudioFramePosition = 0
+    private(set) var trimEnd: AVAudioFramePosition = 0
+
     /// Whether new region selections should loop. Defaults to true: selecting a
     /// region is overwhelmingly a "loop this section to practice it" action.
     var loopMode: Bool = true {
@@ -130,6 +136,8 @@ final class AudioEngine {
         sourceURL = url
         fullBuffer = buffer
         selection = .whole
+        trimStart = 0
+        trimEnd = AVAudioFramePosition(buffer.frameLength)
         bookmarks = []
         onBookmarksChanged?()
         rebuildGraph(format: buffer.format)
@@ -195,7 +203,14 @@ final class AudioEngine {
     // MARK: - Selection & seeking
 
     func setSelection(_ selection: Selection) {
-        self.selection = selection
+        // Constrain a new region to the trimmed, accessible range.
+        if case .region(let s, let length, let loops) = selection {
+            let lo = max(trimStart, min(trimEnd, s))
+            let hi = max(lo + 1, min(trimEnd, s + AVAudioFramePosition(length)))
+            self.selection = .region(start: lo, length: AVAudioFrameCount(hi - lo), loops: loops)
+        } else {
+            self.selection = selection
+        }
         applyRegionToCore(seekToStart: true)
     }
 
@@ -205,7 +220,7 @@ final class AudioEngine {
     func seek(toFrame frame: AVAudioFramePosition) {
         guard fullBuffer != nil else { return }
         navAnchorTime = nil   // any seek ends the bookmark-nav session
-        let clamped = max(0, min(totalFrames, frame))
+        let clamped = max(trimStart, min(trimEnd, frame))
         if case .region(let start, let length, _) = selection {
             let regionEnd = start + AVAudioFramePosition(length)
             if !(clamped >= start && clamped < regionEnd) {
@@ -233,7 +248,7 @@ final class AudioEngine {
         let wrap: Bool
         switch selection {
         case .whole:
-            upperBoundExclusive = totalFrames
+            upperBoundExclusive = trimEnd
             wrap = false
         case .region(let start, let length, let loops):
             upperBoundExclusive = start + AVAudioFramePosition(length)
@@ -255,10 +270,37 @@ final class AudioEngine {
     /// ends up outside, the render clamps it next slice.
     func setRegionBounds(start: AVAudioFramePosition, end: AVAudioFramePosition) {
         guard fullBuffer != nil else { return }
-        let lo = max(0, min(totalFrames, min(start, end)))
-        let hi = max(lo + 1, min(totalFrames, max(start, end)))
+        let lo = max(trimStart, min(trimEnd, min(start, end)))
+        let hi = max(lo + 1, min(trimEnd, max(start, end)))
         selection = .region(start: lo, length: AVAudioFrameCount(hi - lo), loops: loopMode)
         core.setRegion(start: lo, end: hi, looping: loopMode, seekToStart: false)
+    }
+
+    // MARK: - Trim
+
+    /// Set the accessible range. Live (no glitchy seek): the core region for
+    /// whole-file playback is updated to the new bounds and the render clamps
+    /// the cursor next slice. A region selection is clamped into the new range.
+    func setTrim(start: AVAudioFramePosition, end: AVAudioFramePosition) {
+        guard fullBuffer != nil, totalFrames > 0 else { return }
+        let lo = max(0, min(totalFrames - 1, min(start, end)))
+        let hi = max(lo + 1, min(totalFrames, max(start, end)))
+        trimStart = lo
+        trimEnd = hi
+        clampSelectionToTrim()
+        applyRegionToCore(seekToStart: false)
+    }
+
+    private func clampSelectionToTrim() {
+        guard case .region(let s, let length, let loops) = selection else { return }
+        let regionEnd = s + AVAudioFramePosition(length)
+        let ns = max(trimStart, min(trimEnd, s))
+        let ne = max(ns + 1, min(trimEnd, regionEnd))
+        if ns >= trimEnd || ne <= trimStart {
+            selection = .whole   // region fell entirely outside the trim
+        } else {
+            selection = .region(start: ns, length: AVAudioFrameCount(ne - ns), loops: loops)
+        }
     }
 
     // MARK: - Bookmarks
@@ -287,7 +329,7 @@ final class AudioEngine {
 
     func addBookmark(at frame: AVAudioFramePosition, name: String = "") {
         guard fullBuffer != nil else { return }
-        let clamped = max(0, min(totalFrames, frame))
+        let clamped = max(trimStart, min(trimEnd, frame))
         if bookmarks.contains(where: { abs($0.frame - clamped) < bookmarkTolerance }) { return }
         bookmarks.append(Bookmark(frame: clamped, name: name))
         bookmarks.sort { $0.frame < $1.frame }
@@ -414,7 +456,7 @@ final class AudioEngine {
         let looping: Bool
         switch selection {
         case .whole:
-            end = totalFrames
+            end = trimEnd
             looping = false
         case .region(let s, let length, let loops):
             end = s + AVAudioFramePosition(length)
@@ -425,10 +467,11 @@ final class AudioEngine {
 
     // MARK: - Derived positions
 
-    /// Absolute frame offset where the current selection begins.
+    /// Absolute frame offset where the current selection begins. For the whole
+    /// file this is the trim start, not 0.
     var selectionStartFrame: AVAudioFramePosition {
         switch selection {
-        case .whole: return 0
+        case .whole: return trimStart
         case .region(let start, _, _): return start
         }
     }

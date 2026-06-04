@@ -50,11 +50,15 @@ final class TransportView: NSView {
     private func setupSubviews() {
         playButton.target = self
         playButton.action = #selector(togglePlay(_:))
+        // Fixed width so toggling "Play" / "Pause" doesn't reflow the row.
+        playButton.widthAnchor.constraint(equalToConstant: 88).isActive = true
         stopButton.target = self
         stopButton.action = #selector(stop(_:))
         loopButton.target = self
         loopButton.action = #selector(toggleLoop(_:))
         loopButton.state = audioEngine.loopMode ? .on : .off
+
+        statusLabel.textColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
 
         bookmarkButton.image = NSImage(systemSymbolName: "bookmark", accessibilityDescription: "Add Bookmark")
         bookmarkButton.title = "+"

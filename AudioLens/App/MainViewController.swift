@@ -82,6 +82,9 @@ final class MainViewController: NSViewController {
         waveformView.onLoopBoundsChanged = { [weak self] start, end in
             self?.audioEngine.setRegionBounds(start: start, end: end)
         }
+        waveformView.onTrimChanged = { [weak self] start, end in
+            self?.audioEngine.setTrim(start: start, end: end)
+        }
         waveformView.onBookmarkMoved = { [weak self] from, to in
             self?.audioEngine.moveBookmark(from: from, to: to)
         }
@@ -134,6 +137,8 @@ final class MainViewController: NSViewController {
     func didLoadAudio() {
         if let buffer = audioEngine.fullBuffer {
             waveformView.setBuffer(buffer, url: audioEngine.sourceURL)
+            waveformView.trimStartFrame = audioEngine.trimStart
+            waveformView.trimEndFrame = audioEngine.trimEnd
         }
         transportView.refresh()
     }
