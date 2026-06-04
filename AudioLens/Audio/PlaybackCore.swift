@@ -41,6 +41,8 @@ final class PlaybackCore: @unchecked Sendable {
         var pan: Double = 0          // -1 = L, 0 = center, +1 = R
         var mono: Bool = false       // sum L+R to mono before panning
         var panMode: PanMode = .balance
+        var saturate: Bool = false   // tanh soft-clip on the source
+        var drive: Double = 2.0      // saturation pre-gain
         var regionStart: AVAudioFramePosition = 0
         var regionEnd: AVAudioFramePosition = 0
         var cursor: AVAudioFramePosition = 0
@@ -173,6 +175,9 @@ final class PlaybackCore: @unchecked Sendable {
     func setPan(_ pan: Double) { lock.withLockUnchecked { $0.pan = pan } }
     func setMono(_ mono: Bool) { lock.withLockUnchecked { $0.mono = mono } }
     func setPanMode(_ mode: PanMode) { lock.withLockUnchecked { $0.panMode = mode } }
+    func setSaturation(_ on: Bool, drive: Double) {
+        lock.withLockUnchecked { $0.saturate = on; $0.drive = drive }
+    }
 
     var playhead: AVAudioFramePosition { lock.withLockUnchecked { $0.playhead } }
     var isFinished: Bool { lock.withLockUnchecked { $0.finished } }
@@ -186,6 +191,7 @@ final class PlaybackCore: @unchecked Sendable {
         let snap = lock.withLockUnchecked {
             (c: inout Control) -> (playing: Bool, looping: Bool, pitch: Double, time: Double,
                                    pan: Double, mono: Bool, panMode: PanMode,
+                                   saturate: Bool, drive: Double,
                                    regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition,
                                    cursor: AVAudioFramePosition, reset: Bool, generation: UInt64,
                                    seekEpoch: UInt64,
@@ -195,6 +201,7 @@ final class PlaybackCore: @unchecked Sendable {
             let r = c.resetRequest
             c.resetRequest = false
             return (c.playing, c.looping, c.pitchScale, c.timeRatio, c.pan, c.mono, c.panMode,
+                    c.saturate, c.drive,
                     c.regionStart, c.regionEnd, c.cursor, r, c.generation, c.seekEpoch,
                     c.stretcher, c.src0, c.src1, c.srcFrames)
         }
@@ -335,7 +342,8 @@ final class PlaybackCore: @unchecked Sendable {
         let outCount = min(pendingCount, frameCountInt)
         if outCount > 0 {
             writeServed(dst0: dst0, dst1: dst1, count: outCount,
-                        pan: snap.pan, mono: snap.mono, panMode: snap.panMode)
+                        pan: snap.pan, mono: snap.mono, panMode: snap.panMode,
+                        saturate: snap.saturate, drive: snap.drive)
         }
         if outCount < frameCountInt {
             dst0?.advanced(by: outCount).update(repeating: 0, count: frameCountInt - outCount)
@@ -380,7 +388,8 @@ final class PlaybackCore: @unchecked Sendable {
     /// computed once per render — the per-sample loop is pure arithmetic.
     private func writeServed(dst0: UnsafeMutablePointer<Float>?,
                              dst1: UnsafeMutablePointer<Float>?,
-                             count: Int, pan: Double, mono: Bool, panMode: PanMode) {
+                             count: Int, pan: Double, mono: Bool, panMode: PanMode,
+                             saturate: Bool, drive: Double) {
         let s0 = scratch0, s1 = scratch1
         if let d0 = dst0, let d1 = dst1 {
             if mono {
@@ -432,6 +441,15 @@ final class PlaybackCore: @unchecked Sendable {
             } else {
                 d0.update(from: s0, count: count)
             }
+        }
+
+        // Soft-clip: tanh bends peaks toward ±1 without ever crossing it, adding
+        // gentle harmonic "warmth/loudness". A peak limiter downstream still
+        // guarantees the absolute ceiling after the EQ.
+        if saturate {
+            let d = Float(drive)
+            if let d0 = dst0 { for i in 0..<count { d0[i] = tanhf(d * d0[i]) } }
+            if let d1 = dst1 { for i in 0..<count { d1[i] = tanhf(d * d1[i]) } }
         }
     }
 }

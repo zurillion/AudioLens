@@ -60,7 +60,7 @@ final class MainViewController: NSViewController {
             output.topAnchor.constraint(equalTo: transport.bottomAnchor, constant: 12),
             output.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             output.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            output.heightAnchor.constraint(equalToConstant: 40),
+            output.heightAnchor.constraint(equalToConstant: 76),
 
             pitchTime.topAnchor.constraint(equalTo: output.bottomAnchor, constant: 12),
             pitchTime.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),

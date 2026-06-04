@@ -1,8 +1,9 @@
 import AppKit
 
-/// Output / mixing controls: master volume, stereo pan with a Balance/Pan mode
-/// selector, and a "Mono" toggle that sums L+R. Pan stays active in mono mode,
-/// where it positions the summed signal with an equal-power law.
+/// Output / mixing controls. Row 1: master volume, stereo pan with a
+/// Balance/Pan mode selector, and a "Mono" toggle. Row 2: an optional
+/// clip-safe output stage (peak limiter, with an extra tanh saturator and
+/// Drive knob in Saturator mode).
 @MainActor
 final class OutputView: NSView {
 
@@ -16,6 +17,12 @@ final class OutputView: NSView {
         labels: ["Balance", "Pan"], trackingMode: .selectOne, target: nil, action: nil)
     private let monoCheckbox = NSButton(checkboxWithTitle: "Mono", target: nil, action: nil)
 
+    private let stageCheckbox = NSButton(checkboxWithTitle: "Clip-safe output", target: nil, action: nil)
+    private let stageModeControl = NSSegmentedControl(
+        labels: ["Limiter", "Saturator"], trackingMode: .selectOne, target: nil, action: nil)
+    private let driveSlider = NSSlider(value: 2, minValue: 1, maxValue: 8, target: nil, action: nil)
+    private let driveLabel = NSTextField(labelWithString: "×2.0")
+
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
         super.init(frame: .zero)
@@ -28,6 +35,26 @@ final class OutputView: NSView {
     }
 
     private func setupSubviews() {
+        let row1 = makeMixRow()
+        let row2 = makeStageRow()
+
+        let outer = NSStackView(views: [row1, row2])
+        outer.orientation = .vertical
+        outer.alignment = .leading
+        outer.spacing = 8
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(outer)
+
+        NSLayoutConstraint.activate([
+            outer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            outer.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            outer.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+
+        updateStageEnablement()
+    }
+
+    private func makeMixRow() -> NSView {
         let volumeIcon = NSTextField(labelWithString: "🔊")
 
         volumeSlider.target = self
@@ -68,33 +95,61 @@ final class OutputView: NSView {
         monoCheckbox.action = #selector(monoChanged(_:))
         monoCheckbox.state = audioEngine.isMono ? .on : .off
         monoCheckbox.toolTip = "Sum left and right to a single mono signal"
-        // The Balance/Pan choice only applies to a stereo signal.
         panModeControl.isEnabled = !audioEngine.isMono
 
-        // A thin vertical rule separates the volume group from the pan group.
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        separator.heightAnchor.constraint(equalToConstant: 22).isActive = true
-        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
-
-        let stack = NSStackView(views: [
+        let row = NSStackView(views: [
             volumeIcon, volumeSlider, volumeLabel,
-            separator,
+            verticalSeparator(),
             panTitle, lLabel, panSlider, rLabel, panLabel, panModeControl,
             monoCheckbox,
         ])
-        stack.orientation = .horizontal
-        stack.spacing = 10
-        stack.alignment = .centerY
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        row.orientation = .horizontal
+        row.spacing = 10
+        row.alignment = .centerY
+        return row
+    }
 
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+    private func makeStageRow() -> NSView {
+        stageCheckbox.target = self
+        stageCheckbox.action = #selector(stageEnabledChanged(_:))
+        stageCheckbox.state = audioEngine.outputStageEnabled ? .on : .off
+        stageCheckbox.toolTip = "Insert a final stage so the output can never clip."
+
+        stageModeControl.target = self
+        stageModeControl.action = #selector(stageModeChanged(_:))
+        stageModeControl.selectedSegment = (audioEngine.outputStageMode == .saturator) ? 1 : 0
+        stageModeControl.toolTip =
+            "Limiter: transparent ceiling.  Saturator: adds tanh warmth/loudness (BOOM-style)."
+
+        driveSlider.target = self
+        driveSlider.action = #selector(driveChanged(_:))
+        driveSlider.isContinuous = true
+        driveSlider.doubleValue = Double(audioEngine.saturationDrive)
+        driveSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        driveLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        driveLabel.alignment = .right
+        driveLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        updateDriveLabel()
+
+        let row = NSStackView(views: [
+            stageCheckbox,
+            verticalSeparator(),
+            stageModeControl,
+            NSTextField(labelWithString: "Drive"), driveSlider, driveLabel,
         ])
+        row.orientation = .horizontal
+        row.spacing = 10
+        row.alignment = .centerY
+        return row
+    }
+
+    private func verticalSeparator() -> NSBox {
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        return separator
     }
 
     // MARK: - Actions
@@ -105,7 +160,6 @@ final class OutputView: NSView {
     }
 
     @objc private func panChanged(_ sender: NSSlider) {
-        // Snap to dead center near zero so a centred image is easy to hit.
         if abs(sender.doubleValue) < 0.03 { sender.doubleValue = 0 }
         audioEngine.pan = Float(sender.doubleValue)
         updatePanLabel()
@@ -120,6 +174,23 @@ final class OutputView: NSView {
         panModeControl.isEnabled = (sender.state != .on)
     }
 
+    @objc private func stageEnabledChanged(_ sender: NSButton) {
+        audioEngine.outputStageEnabled = (sender.state == .on)
+        updateStageEnablement()
+    }
+
+    @objc private func stageModeChanged(_ sender: NSSegmentedControl) {
+        audioEngine.outputStageMode = (sender.selectedSegment == 1) ? .saturator : .limiter
+        updateStageEnablement()
+    }
+
+    @objc private func driveChanged(_ sender: NSSlider) {
+        audioEngine.saturationDrive = Float(sender.doubleValue)
+        updateDriveLabel()
+    }
+
+    // MARK: - Display
+
     private func updateVolumeLabel() {
         volumeLabel.stringValue = "\(Int(volumeSlider.doubleValue.rounded()))%"
     }
@@ -133,5 +204,18 @@ final class OutputView: NSView {
         } else {
             panLabel.stringValue = "R\(Int((p * 100).rounded()))"
         }
+    }
+
+    private func updateDriveLabel() {
+        driveLabel.stringValue = String(format: "×%.1f", driveSlider.doubleValue)
+    }
+
+    /// Mode selector active only when the stage is on; Drive only in Saturator.
+    private func updateStageEnablement() {
+        let on = (stageCheckbox.state == .on)
+        let saturator = (stageModeControl.selectedSegment == 1)
+        stageModeControl.isEnabled = on
+        driveSlider.isEnabled = on && saturator
+        driveLabel.textColor = (on && saturator) ? .labelColor : .disabledControlTextColor
     }
 }

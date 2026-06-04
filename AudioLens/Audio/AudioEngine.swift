@@ -1,5 +1,14 @@
 import AVFoundation
+import AudioToolbox
 import Foundation
+
+/// Final clip-safe output stage behavior.
+enum OutputStageMode: Sendable {
+    /// Transparent look-ahead peak limiter only.
+    case limiter
+    /// Limiter plus a tanh soft-saturator for warmth/loudness ("BOOM"-style).
+    case saturator
+}
 
 /// Wraps a non-Sendable value so it can cross a Task boundary. Produced by the
 /// decode task and consumed once on the main actor; nothing mutates it
@@ -50,6 +59,9 @@ final class AudioEngine {
 
     let engine = AVAudioEngine()
     let eq: AVAudioUnitEQ
+    /// Final node before the output: Apple's peak limiter. Bypassed unless the
+    /// clip-safe output stage is enabled; guarantees the signal can't clip.
+    private let limiter: AVAudioUnitEffect
     private let core = PlaybackCore()
     private var sourceNode: AVAudioSourceNode?
 
@@ -68,9 +80,17 @@ final class AudioEngine {
 
     init() {
         self.eq = AVAudioUnitEQ(numberOfBands: Self.maxEQBands)
+        let limiterDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_Effect,
+            componentSubType: kAudioUnitSubType_PeakLimiter,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0, componentFlagsMask: 0)
+        self.limiter = AVAudioUnitEffect(audioComponentDescription: limiterDesc)
         eq.globalGain = 0
         setEQBandCount(10)
         engine.attach(eq)
+        engine.attach(limiter)
+        limiter.bypass = true   // output stage is off by default
     }
 
     // MARK: - Graphic EQ
@@ -589,6 +609,46 @@ final class AudioEngine {
         }
     }
 
+    // MARK: - Clip-safe output stage
+
+    private var outputStageOn = false
+    private var currentStageMode: OutputStageMode = .limiter
+    private var currentDrive: Double = 2.0
+
+    /// Enable the final clip-safe stage. When on, the peak limiter is active
+    /// (no output can clip); the saturator is additionally engaged in
+    /// `.saturator` mode.
+    var outputStageEnabled: Bool {
+        get { outputStageOn }
+        set {
+            outputStageOn = newValue
+            limiter.bypass = !newValue
+            applySaturationState()
+        }
+    }
+
+    var outputStageMode: OutputStageMode {
+        get { currentStageMode }
+        set {
+            currentStageMode = newValue
+            applySaturationState()
+        }
+    }
+
+    /// Saturation pre-gain (1…8). Higher = louder/warmer, more coloration.
+    var saturationDrive: Float {
+        get { Float(currentDrive) }
+        set {
+            currentDrive = max(1.0, min(8.0, Double(newValue)))
+            applySaturationState()
+        }
+    }
+
+    private func applySaturationState() {
+        let saturate = outputStageOn && currentStageMode == .saturator
+        core.setSaturation(saturate, drive: currentDrive)
+    }
+
     // MARK: - Graph
 
     /// (Re)build the source → EQ → mixer chain for a given processing format.
@@ -611,8 +671,15 @@ final class AudioEngine {
         }
         let node = AVAudioSourceNode(format: format, renderBlock: renderBlock)
         engine.attach(node)
+        // source → EQ → mixer(volume) → limiter → output. The limiter sits last
+        // so it catches peaks from any boost (EQ or volume). Drop the mixer's
+        // implicit auto-connection to the output before inserting the limiter.
+        let mixer = engine.mainMixerNode
         engine.connect(node, to: eq, format: format)
-        engine.connect(eq, to: engine.mainMixerNode, format: format)
+        engine.connect(eq, to: mixer, format: format)
+        engine.disconnectNodeOutput(mixer)
+        engine.connect(mixer, to: limiter, format: format)
+        engine.connect(limiter, to: engine.outputNode, format: format)
         sourceNode = node
     }
 }
