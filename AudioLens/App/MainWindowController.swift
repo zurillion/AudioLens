@@ -139,29 +139,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     @objc func lastBookmark(_ sender: Any?) { audioEngine.goToLastBookmark() }
     @objc func clearBookmarks(_ sender: Any?) { audioEngine.clearBookmarks() }
 
+    /// Selecting a bookmark: plain = seek, Option = delete, Command = rename.
+    /// NSMenuItem doesn't carry the click modifiers, so we read the current
+    /// event's flags — works for both the menu bar and the in-window popup.
     @objc func openBookmark(_ sender: NSMenuItem) {
         guard let number = sender.representedObject as? NSNumber else { return }
-        audioEngine.goToBookmark(at: number.int64Value)
-    }
-
-    /// Bookmarks as (frame, timecode label) for the Bookmarks menu.
-    var bookmarkEntries: [(frame: AVAudioFramePosition, label: String)] {
-        let rate = audioEngine.sampleRate
-        return audioEngine.bookmarks.map { frame in
-            (frame, Self.formatTimecode(Double(frame) / rate))
+        let frame = number.int64Value
+        let mods = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if mods.contains(.option) {
+            audioEngine.removeBookmark(at: frame)
+        } else if mods.contains(.command) {
+            BookmarkRenamePrompt.present(in: window, engine: audioEngine, frame: frame)
+        } else {
+            audioEngine.goToBookmark(at: frame)
         }
     }
 
-    /// hh:mm:ss:xx where xx is hundredths of a second.
-    static func formatTimecode(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "00:00:00:00" }
-        let totalHundredths = Int((seconds * 100).rounded())
-        let hundredths = totalHundredths % 100
-        let totalSeconds = totalHundredths / 100
-        let s = totalSeconds % 60
-        let m = (totalSeconds / 60) % 60
-        let h = totalSeconds / 3600
-        return String(format: "%02d:%02d:%02d:%02d", h, m, s, hundredths)
+    /// Bookmarks as (frame, "hh:mm:ss:xx  name") for menus.
+    var bookmarkEntries: [(frame: AVAudioFramePosition, label: String)] {
+        audioEngine.bookmarkMenuEntries
     }
 
     private func load(url: URL) async {

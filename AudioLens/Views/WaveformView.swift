@@ -73,6 +73,8 @@ final class WaveformView: NSView {
     var onBookmarkMoved: ((AVAudioFramePosition, AVAudioFramePosition) -> Void)?
     /// Option-click on a bookmark marker — delete it.
     var onBookmarkDeleted: ((AVAudioFramePosition) -> Void)?
+    /// Command-click on a bookmark marker — rename it.
+    var onBookmarkRenameRequested: ((AVAudioFramePosition) -> Void)?
 
     private let clickDragThreshold: CGFloat = 4
     private var dragMode: DragMode = .none
@@ -179,6 +181,8 @@ final class WaveformView: NSView {
             if let frame = nearestBookmark(toPixel: point.x) {
                 if event.modifierFlags.contains(.option) {
                     onBookmarkDeleted?(frame)
+                } else if event.modifierFlags.contains(.command) {
+                    onBookmarkRenameRequested?(frame)
                 } else {
                     dragMode = .bookmark
                     draggedBookmarkFrame = frame

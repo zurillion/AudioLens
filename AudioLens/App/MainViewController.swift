@@ -88,10 +88,14 @@ final class MainViewController: NSViewController {
         waveformView.onBookmarkDeleted = { [weak self] frame in
             self?.audioEngine.removeBookmark(at: frame)
         }
+        waveformView.onBookmarkRenameRequested = { [weak self] frame in
+            guard let self else { return }
+            BookmarkRenamePrompt.present(in: self.view.window, engine: self.audioEngine, frame: frame)
+        }
 
         audioEngine.onBookmarksChanged = { [weak self] in
             guard let self else { return }
-            self.waveformView.bookmarks = self.audioEngine.bookmarks
+            self.waveformView.bookmarks = self.audioEngine.bookmarks.map { $0.frame }
         }
     }
 

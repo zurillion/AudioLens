@@ -173,43 +173,6 @@ final class BookmarksMenuDelegate: NSObject, NSMenuDelegate {
     weak var windowController: MainWindowController?
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        menu.removeAllItems()
-
-        menu.addItem(NSMenuItem(title: "Add Bookmark",
-                                action: #selector(MainWindowController.addBookmark(_:)),
-                                keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Next Bookmark",
-                                action: #selector(MainWindowController.nextBookmark(_:)),
-                                keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Previous Bookmark",
-                                action: #selector(MainWindowController.previousBookmark(_:)),
-                                keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "First Bookmark",
-                                action: #selector(MainWindowController.firstBookmark(_:)),
-                                keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Last Bookmark",
-                                action: #selector(MainWindowController.lastBookmark(_:)),
-                                keyEquivalent: ""))
-        menu.addItem(.separator())
-
-        let entries = windowController?.bookmarkEntries ?? []
-        if entries.isEmpty {
-            let item = NSMenuItem(title: "No Bookmarks", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        } else {
-            for (index, entry) in entries.enumerated() {
-                let item = NSMenuItem(title: "\(index + 1).  \(entry.label)",
-                                      action: #selector(MainWindowController.openBookmark(_:)),
-                                      keyEquivalent: "")
-                item.representedObject = NSNumber(value: entry.frame)
-                menu.addItem(item)
-            }
-            menu.addItem(.separator())
-            menu.addItem(NSMenuItem(title: "Clear Bookmarks",
-                                    action: #selector(MainWindowController.clearBookmarks(_:)),
-                                    keyEquivalent: ""))
-        }
+        BookmarksMenuBuilder.populate(menu, entries: windowController?.bookmarkEntries ?? [])
     }
 }

@@ -204,6 +204,7 @@ final class AudioEngine {
     /// and plays the whole file from there. Playback state is preserved.
     func seek(toFrame frame: AVAudioFramePosition) {
         guard fullBuffer != nil else { return }
+        navAnchorTime = nil   // any seek ends the bookmark-nav session
         let clamped = max(0, min(totalFrames, frame))
         if case .region(let start, let length, _) = selection {
             let regionEnd = start + AVAudioFramePosition(length)
@@ -262,13 +263,19 @@ final class AudioEngine {
 
     // MARK: - Bookmarks
 
-    /// Bookmark positions in source-buffer frames, kept sorted ascending.
-    /// In-memory and per loaded file (cleared on load).
-    private(set) var bookmarks: [AVAudioFramePosition] = []
+    /// Named bookmarks, kept sorted ascending by frame. In-memory, per loaded
+    /// file (cleared on load).
+    private(set) var bookmarks: [Bookmark] = []
 
-    /// Invoked on the main actor whenever the bookmark set changes, so the
-    /// menu and waveform can refresh.
+    /// Invoked on the main actor whenever the bookmark set changes.
     var onBookmarksChanged: (() -> Void)?
+
+    /// Short navigation session: while active, up/down step from the last
+    /// bookmark reached rather than the (possibly moving) playhead, so repeated
+    /// presses scroll reliably in both directions during playback.
+    private var navAnchorFrame: AVAudioFramePosition?
+    private var navAnchorTime: Date?
+    private static let navSessionWindow: TimeInterval = 1.0
 
     private var bookmarkTolerance: AVAudioFramePosition {
         max(1, AVAudioFramePosition(sampleRate * 0.05))   // 50 ms
@@ -278,29 +285,41 @@ final class AudioEngine {
         addBookmark(at: currentFramePosition)
     }
 
-    func addBookmark(at frame: AVAudioFramePosition) {
+    func addBookmark(at frame: AVAudioFramePosition, name: String = "") {
         guard fullBuffer != nil else { return }
         let clamped = max(0, min(totalFrames, frame))
-        if bookmarks.contains(where: { abs($0 - clamped) < bookmarkTolerance }) { return }
-        bookmarks.append(clamped)
-        bookmarks.sort()
+        if bookmarks.contains(where: { abs($0.frame - clamped) < bookmarkTolerance }) { return }
+        bookmarks.append(Bookmark(frame: clamped, name: name))
+        bookmarks.sort { $0.frame < $1.frame }
         onBookmarksChanged?()
     }
 
     func removeBookmark(at frame: AVAudioFramePosition) {
         let before = bookmarks.count
-        bookmarks.removeAll { abs($0 - frame) < bookmarkTolerance }
+        bookmarks.removeAll { abs($0.frame - frame) < bookmarkTolerance }
         if bookmarks.count != before { onBookmarksChanged?() }
     }
 
-    /// Move the bookmark nearest `from` to `to`. Used by dragging a marker.
+    /// Move the bookmark nearest `from` to `to`, preserving its name.
     func moveBookmark(from: AVAudioFramePosition, to: AVAudioFramePosition) {
-        guard let idx = bookmarks.firstIndex(where: { abs($0 - from) < bookmarkTolerance }) else { return }
-        bookmarks.remove(at: idx)
-        let clamped = max(0, min(totalFrames, to))
-        if !bookmarks.contains(clamped) { bookmarks.append(clamped) }
-        bookmarks.sort()
+        guard let idx = bookmarks.firstIndex(where: { abs($0.frame - from) < bookmarkTolerance }) else { return }
+        var moved = bookmarks.remove(at: idx)
+        moved.frame = max(0, min(totalFrames, to))
+        if !bookmarks.contains(where: { $0.frame == moved.frame }) {
+            bookmarks.append(moved)
+        }
+        bookmarks.sort { $0.frame < $1.frame }
         onBookmarksChanged?()
+    }
+
+    func renameBookmark(at frame: AVAudioFramePosition, to name: String) {
+        guard let idx = bookmarks.firstIndex(where: { abs($0.frame - frame) < bookmarkTolerance }) else { return }
+        bookmarks[idx].name = name
+        onBookmarksChanged?()
+    }
+
+    func nameOfBookmark(at frame: AVAudioFramePosition) -> String? {
+        bookmarks.first(where: { abs($0.frame - frame) < bookmarkTolerance })?.name
     }
 
     func clearBookmarks() {
@@ -313,30 +332,71 @@ final class AudioEngine {
         seek(toFrame: frame)
     }
 
-    /// Up arrow: jump to the next bookmark after the playhead, wrapping to the
-    /// first once past the last.
+    /// Up arrow: next bookmark after the navigation basis, wrapping to the first.
     func goToNextBookmark() {
-        guard !bookmarks.isEmpty else { return }
-        let cur = currentFramePosition
-        let target = bookmarks.first(where: { $0 > cur + bookmarkTolerance }) ?? bookmarks.first!
-        seek(toFrame: target)
+        navigateBookmark(forward: true)
     }
 
-    /// Down arrow: jump to the previous bookmark before the playhead, wrapping
-    /// to the last once before the first.
+    /// Down arrow: previous bookmark before the navigation basis, wrapping to
+    /// the last.
     func goToPreviousBookmark() {
+        navigateBookmark(forward: false)
+    }
+
+    private func navigateBookmark(forward: Bool) {
         guard !bookmarks.isEmpty else { return }
-        let cur = currentFramePosition
-        let target = bookmarks.last(where: { $0 < cur - bookmarkTolerance }) ?? bookmarks.last!
+        let basis = navigationBasis()
+        let frames = bookmarks.map { $0.frame }
+        let target: AVAudioFramePosition
+        if forward {
+            target = frames.first(where: { $0 > basis + bookmarkTolerance }) ?? frames.first!
+        } else {
+            target = frames.last(where: { $0 < basis - bookmarkTolerance }) ?? frames.last!
+        }
         seek(toFrame: target)
+        // seek() clears the session; re-establish it anchored at the target.
+        navAnchorFrame = target
+        navAnchorTime = Date()
+    }
+
+    /// The reference position for the next bookmark jump: the last bookmark
+    /// reached if we're still inside the nav session window, else the playhead.
+    private func navigationBasis() -> AVAudioFramePosition {
+        if let anchor = navAnchorFrame, let time = navAnchorTime,
+           Date().timeIntervalSince(time) < Self.navSessionWindow {
+            return anchor
+        }
+        return currentFramePosition
     }
 
     func goToFirstBookmark() {
-        if let first = bookmarks.first { seek(toFrame: first) }
+        if let first = bookmarks.first { seek(toFrame: first.frame) }
     }
 
     func goToLastBookmark() {
-        if let last = bookmarks.last { seek(toFrame: last) }
+        if let last = bookmarks.last { seek(toFrame: last.frame) }
+    }
+
+    /// Bookmarks as (frame, "hh:mm:ss:xx  name") for menus.
+    var bookmarkMenuEntries: [(frame: AVAudioFramePosition, label: String)] {
+        let rate = sampleRate
+        return bookmarks.map { bm in
+            let timecode = Self.formatTimecode(Double(bm.frame) / rate)
+            let label = bm.name.isEmpty ? timecode : "\(timecode)   \(bm.name)"
+            return (bm.frame, label)
+        }
+    }
+
+    /// hh:mm:ss:xx where xx is hundredths of a second.
+    static func formatTimecode(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00:00:00" }
+        let totalHundredths = Int((seconds * 100).rounded())
+        let hundredths = totalHundredths % 100
+        let totalSeconds = totalHundredths / 100
+        let s = totalSeconds % 60
+        let m = (totalSeconds / 60) % 60
+        let h = totalSeconds / 3600
+        return String(format: "%02d:%02d:%02d:%02d", h, m, s, hundredths)
     }
 
     private func applyRegionToCore(seekToStart: Bool) {
