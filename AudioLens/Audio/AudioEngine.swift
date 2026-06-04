@@ -628,7 +628,7 @@ final class AudioEngine {
 
     private var outputStageOn = false
     private var currentStageMode: OutputStageMode = .limiter
-    private var currentDrive: Double = 2.0
+    private var currentDrive: Double = 1.5
 
     /// Enable the final clip-safe stage. When on, the peak limiter is active
     /// (no output can clip); the saturator is additionally engaged in
@@ -650,11 +650,13 @@ final class AudioEngine {
         }
     }
 
-    /// Saturation pre-gain (1…8). Higher = louder/warmer, more coloration.
+    /// Saturation pre-gain (1…4). Higher = louder/warmer, more coloration.
+    /// Capped at ×4: beyond that the saturator pushes every moderate input to
+    /// the ceiling and the result is more "sound design" than music playback.
     var saturationDrive: Float {
         get { Float(currentDrive) }
         set {
-            currentDrive = max(1.0, min(8.0, Double(newValue)))
+            currentDrive = max(1.0, min(4.0, Double(newValue)))
             applySaturationState()
         }
     }

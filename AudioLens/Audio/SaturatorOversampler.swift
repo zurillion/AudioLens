@@ -104,12 +104,17 @@ final class SaturatorOversampler {
             a2 += phUp[2 * pt + k] * xk
             a3 += phUp[3 * pt + k] * xk
         }
-        // tanh at the oversampled rate. Phase 0 is earliest in time, phase 3
-        // latest.
-        let s0 = tanhf(drive * a0)
-        let s1 = tanhf(drive * a1)
-        let s2 = tanhf(drive * a2)
-        let s3 = tanhf(drive * a3)
+        // Nonlinearity at the oversampled rate. The makeup factor `1/tanh(drive)`
+        // maps the peak input ±1 to ±1 on the output instead of letting tanh
+        // attenuate it (tanh(drive)) — bare tanh sounds "squashed/clippy" at
+        // higher drive precisely *because* it pulls peaks down. With makeup,
+        // turning Drive up brings quieter content forward without dropping the
+        // peak, which is the loudness behavior the knob promises.
+        let makeup = 1.0 / tanhf(drive)
+        let s0 = tanhf(drive * a0) * makeup
+        let s1 = tanhf(drive * a1) * makeup
+        let s2 = tanhf(drive * a2) * makeup
+        let s3 = tanhf(drive * a3) * makeup
 
         // Push the 4 new oversampled samples into the downsample delay line,
         // most-recent-first.

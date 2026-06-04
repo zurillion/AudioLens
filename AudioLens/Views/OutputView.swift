@@ -20,8 +20,8 @@ final class OutputView: NSView {
     private let stageCheckbox = NSButton(checkboxWithTitle: "Clip-safe output", target: nil, action: nil)
     private let stageModeControl = NSSegmentedControl(
         labels: ["Limiter", "Saturator"], trackingMode: .selectOne, target: nil, action: nil)
-    private let driveSlider = NSSlider(value: 2, minValue: 1, maxValue: 8, target: nil, action: nil)
-    private let driveLabel = NSTextField(labelWithString: "×2.0")
+    private let driveSlider = NSSlider(value: 1.5, minValue: 1, maxValue: 4, target: nil, action: nil)
+    private let driveLabel = NSTextField(labelWithString: "×1.5")
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
