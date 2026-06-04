@@ -9,7 +9,7 @@ final class TransportView: NSView {
     private let stopButton = NSButton(title: "■ Stop", target: nil, action: nil)
     private let loopButton = NSButton(checkboxWithTitle: "Loop", target: nil, action: nil)
     private let bookmarkButton = NSButton()
-    private let bookmarksMenuButton = NSButton()
+    private let bookmarksPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
     private let volumeSlider = NSSlider(value: 100, minValue: 0, maxValue: 200, target: nil, action: nil)
     private let volumeLabel = NSTextField(labelWithString: "100%")
@@ -64,12 +64,14 @@ final class TransportView: NSView {
         bookmarkButton.action = #selector(addBookmark(_:))
         bookmarkButton.toolTip = "Add a bookmark at the playhead (⌘B)"
 
-        bookmarksMenuButton.title = "Bookmarks ▾"
-        bookmarksMenuButton.imagePosition = .noImage
-        bookmarksMenuButton.bezelStyle = .rounded
-        bookmarksMenuButton.target = self
-        bookmarksMenuButton.action = #selector(showBookmarksMenu(_:))
-        bookmarksMenuButton.toolTip = "Show bookmarks"
+        // Pull-down popup: its menu is rebuilt each time it opens, via the
+        // delegate. Items target nil and travel the responder chain to
+        // MainWindowController, identical to the menu-bar Bookmarks menu.
+        let popupMenu = NSMenu()
+        popupMenu.autoenablesItems = false
+        popupMenu.delegate = self
+        bookmarksPopup.menu = popupMenu
+        bookmarksPopup.toolTip = "Bookmarks"
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
@@ -85,7 +87,7 @@ final class TransportView: NSView {
         let volumeIcon = NSTextField(labelWithString: "🔊")
 
         let stack = NSStackView(views: [
-            playButton, stopButton, loopButton, bookmarkButton, bookmarksMenuButton, timeLabel,
+            playButton, stopButton, loopButton, bookmarkButton, bookmarksPopup, timeLabel,
             volumeIcon, volumeSlider, volumeLabel, statusLabel
         ])
         stack.orientation = .horizontal
@@ -150,14 +152,12 @@ final class TransportView: NSView {
     @objc private func addBookmark(_ sender: NSButton) {
         audioEngine.addBookmarkAtPlayhead()
     }
+}
 
-    @objc private func showBookmarksMenu(_ sender: NSButton) {
-        // Built fresh on each click; items target nil and travel the responder
-        // chain to MainWindowController (same as the menu-bar Bookmarks menu).
-        let menu = NSMenu(title: "Bookmarks")
-        menu.autoenablesItems = false
-        BookmarksMenuBuilder.populate(menu, entries: audioEngine.bookmarkMenuEntries)
-        let origin = NSPoint(x: 0, y: sender.bounds.height + 4)
-        menu.popUp(positioning: nil, at: origin, in: sender)
+extension TransportView: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        BookmarksMenuBuilder.populate(menu,
+                                      entries: audioEngine.bookmarkMenuEntries,
+                                      leadingTitle: "Bookmarks")
     }
 }

@@ -116,9 +116,9 @@ final class MainViewController: NSViewController {
         // AVFoundation's internal 32 Hz reporting rate-limit. We'll switch to
         // CADisplayLink (vsync-locked) when the Metal waveform renderer lands.
         playheadTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 24.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshPlayhead()
-            }
+            // The timer fires on the main run loop; assume the isolation rather
+            // than hopping through a Task each tick.
+            MainActor.assumeIsolated { self?.refreshPlayhead() }
         }
     }
 

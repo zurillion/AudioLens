@@ -59,9 +59,14 @@ final class WaveformView: NSView {
     var playheadFrame: AVAudioFramePosition = 0 {
         didSet {
             guard oldValue != playheadFrame else { return }
-            needsDisplay = true
+            positionPlayhead()   // move the layer; no full redraw
         }
     }
+
+    /// The playhead is a thin layer moved on every tick, so playback doesn't
+    /// trigger a full waveform redraw 24×/s (heavy enough to occasionally
+    /// drop mouse/key events).
+    private let playheadLayer = CALayer()
 
     /// Drag in the body defines a new region.
     var onRegionSelected: ((AVAudioFramePosition, AVAudioFrameCount) -> Void)?
@@ -76,7 +81,7 @@ final class WaveformView: NSView {
     /// Command-click on a bookmark marker — rename it.
     var onBookmarkRenameRequested: ((AVAudioFramePosition) -> Void)?
 
-    private let clickDragThreshold: CGFloat = 4
+    private let clickDragThreshold: CGFloat = 6
     private var dragMode: DragMode = .none
     private var dragStartPixel: CGFloat?
     private var dragCurrentPixel: CGFloat?
@@ -90,6 +95,15 @@ final class WaveformView: NSView {
         layer?.borderColor = NSColor.separatorColor.cgColor
         layer?.borderWidth = 1
         layer?.cornerRadius = 6
+
+        playheadLayer.backgroundColor = NSColor.systemRed.cgColor
+        // Disable implicit animations so the line tracks instantly.
+        playheadLayer.actions = [
+            "position": NSNull(), "bounds": NSNull(),
+            "frame": NSNull(), "hidden": NSNull()
+        ]
+        playheadLayer.isHidden = true
+        layer?.addSublayer(playheadLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -297,15 +311,25 @@ final class WaveformView: NSView {
         }
 
         drawBookmarks(ctx)
+        // The playhead is a separate layer (positionPlayhead), not drawn here.
+    }
 
-        if totalFrames > 0 {
-            let playX = frameToPixel(playheadFrame)
-            ctx.setStrokeColor(NSColor.systemRed.cgColor)
-            ctx.setLineWidth(1)
-            ctx.move(to: CGPoint(x: playX, y: waveTop))
-            ctx.addLine(to: CGPoint(x: playX, y: waveBottom))
-            ctx.strokePath()
+    override func layout() {
+        super.layout()
+        positionPlayhead()
+    }
+
+    private func positionPlayhead() {
+        guard totalFrames > 0 else {
+            playheadLayer.isHidden = true
+            return
         }
+        let x = frameToPixel(playheadFrame)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playheadLayer.isHidden = false
+        playheadLayer.frame = CGRect(x: x, y: waveTop, width: 1, height: max(1, waveBottom - waveTop))
+        CATransaction.commit()
     }
 
     /// One vertical min/max line per pixel column, downsampling the overview to

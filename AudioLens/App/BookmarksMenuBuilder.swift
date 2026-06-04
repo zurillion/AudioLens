@@ -8,8 +8,15 @@ import AVFoundation
 enum BookmarksMenuBuilder {
 
     static func populate(_ menu: NSMenu,
-                         entries: [(frame: AVAudioFramePosition, label: String)]) {
+                         entries: [(frame: AVAudioFramePosition, label: String)],
+                         leadingTitle: String? = nil) {
         menu.removeAllItems()
+
+        // For a pull-down NSPopUpButton, item 0 is shown as the button face.
+        if let leadingTitle {
+            let title = NSMenuItem(title: leadingTitle, action: nil, keyEquivalent: "")
+            menu.addItem(title)
+        }
 
         menu.addItem(commandItem("Add Bookmark", #selector(MainWindowController.addBookmark(_:))))
         menu.addItem(.separator())
