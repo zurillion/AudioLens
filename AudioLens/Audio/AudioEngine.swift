@@ -93,6 +93,19 @@ final class AudioEngine {
         engine.attach(eq)
         engine.attach(limiter)
         limiter.bypass = true   // output stage is off by default
+
+        // Build the post-mixer chain mixer → limiter → output ONCE, before the
+        // engine ever runs. AVAudioEngine doesn't tolerate
+        // disconnectNodeOutput(mixer) being called on a running graph (it
+        // throws "!nodeMixerConns.empty() && !hasDirectConnToIONode" — observed
+        // when loading a second file mid-playback). Per-file rebuilds only
+        // touch the source → eq → mixer half.
+        let mixer = engine.mainMixerNode
+        let outputFormat = mixer.outputFormat(forBus: 0)
+        engine.disconnectNodeOutput(mixer)
+        engine.connect(mixer, to: limiter, format: outputFormat)
+        engine.connect(limiter, to: engine.outputNode, format: outputFormat)
+        installLevelTap(format: outputFormat)
     }
 
     // MARK: - Graphic EQ
@@ -719,16 +732,12 @@ final class AudioEngine {
         }
         let node = AVAudioSourceNode(format: format, renderBlock: renderBlock)
         engine.attach(node)
-        // source → EQ → mixer(volume) → limiter → output. The limiter sits last
-        // so it catches peaks from any boost (EQ or volume). Drop the mixer's
-        // implicit auto-connection to the output before inserting the limiter.
-        let mixer = engine.mainMixerNode
+        // Only the source half is per-file. The mixer → limiter → output tail
+        // was wired once in init() and stays put across loads. The mixer does
+        // SRC between its file-rate input and its hardware-rate output, so
+        // both files at any sample rate go through cleanly.
         engine.connect(node, to: eq, format: format)
-        engine.connect(eq, to: mixer, format: format)
-        engine.disconnectNodeOutput(mixer)
-        engine.connect(mixer, to: limiter, format: format)
-        engine.connect(limiter, to: engine.outputNode, format: format)
+        engine.connect(eq, to: engine.mainMixerNode, format: format)
         sourceNode = node
-        installLevelTap(format: format)
     }
 }
