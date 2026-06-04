@@ -175,6 +175,7 @@ final class WaveformView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard totalFrames > 0 else { return }
         let point = convert(event.locationInWindow, from: nil)
+        NSLog("[AudioLens] waveform mouseDown x=%.1f y=%.1f", point.x, point.y)
 
         // Top strip: grab a loop edge handle if a region is active.
         if point.y <= Self.topStrip, case .region(let start, let length, _) = selection {
@@ -273,8 +274,10 @@ final class WaveformView: NSView {
         }
         let pixelDistance = abs(endPx - startPx)
         if pixelDistance < clickDragThreshold {
+            NSLog("[AudioLens] waveform mouseUp -> seek (dist=%.1f)", pixelDistance)
             onSeek?(pixelToFrame(startPx))
         } else {
+            NSLog("[AudioLens] waveform mouseUp -> region (dist=%.1f)", pixelDistance)
             let lo = pixelToFrame(min(startPx, endPx))
             let hi = pixelToFrame(max(startPx, endPx))
             onRegionSelected?(lo, AVAudioFrameCount(hi - lo))

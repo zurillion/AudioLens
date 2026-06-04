@@ -72,6 +72,11 @@ final class TransportView: NSView {
         popupMenu.delegate = self
         bookmarksPopup.menu = popupMenu
         bookmarksPopup.toolTip = "Bookmarks"
+        // Populate once now so the button face shows "Bookmarks" at launch
+        // (the delegate only fires when the menu is about to open).
+        BookmarksMenuBuilder.populate(popupMenu,
+                                      entries: audioEngine.bookmarkMenuEntries,
+                                      leadingTitle: "Bookmarks")
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
