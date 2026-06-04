@@ -41,8 +41,11 @@ final class PlaybackCore: @unchecked Sendable {
         var pan: Double = 0          // -1 = L, 0 = center, +1 = R
         var mono: Bool = false       // sum L+R to mono before panning
         var panMode: PanMode = .balance
+        var volume: Float = 1.0      // master volume (0…2.0) — applied BEFORE
+                                     // the saturator so its soft-clip catches
+                                     // anything the volume boost pushed over ±1
         var saturate: Bool = false   // tanh soft-clip on the source
-        var drive: Double = 2.0      // saturation pre-gain
+        var drive: Double = 1.5      // saturation pre-gain
         var regionStart: AVAudioFramePosition = 0
         var regionEnd: AVAudioFramePosition = 0
         var cursor: AVAudioFramePosition = 0
@@ -179,6 +182,7 @@ final class PlaybackCore: @unchecked Sendable {
     func setPan(_ pan: Double) { lock.withLockUnchecked { $0.pan = pan } }
     func setMono(_ mono: Bool) { lock.withLockUnchecked { $0.mono = mono } }
     func setPanMode(_ mode: PanMode) { lock.withLockUnchecked { $0.panMode = mode } }
+    func setVolume(_ volume: Float) { lock.withLockUnchecked { $0.volume = volume } }
     func setSaturation(_ on: Bool, drive: Double) {
         lock.withLockUnchecked { $0.saturate = on; $0.drive = drive }
     }
@@ -194,7 +198,7 @@ final class PlaybackCore: @unchecked Sendable {
 
         let snap = lock.withLockUnchecked {
             (c: inout Control) -> (playing: Bool, looping: Bool, pitch: Double, time: Double,
-                                   pan: Double, mono: Bool, panMode: PanMode,
+                                   pan: Double, mono: Bool, panMode: PanMode, volume: Float,
                                    saturate: Bool, drive: Double,
                                    regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition,
                                    cursor: AVAudioFramePosition, reset: Bool, generation: UInt64,
@@ -204,7 +208,7 @@ final class PlaybackCore: @unchecked Sendable {
                                    srcFrames: AVAudioFramePosition) in
             let r = c.resetRequest
             c.resetRequest = false
-            return (c.playing, c.looping, c.pitchScale, c.timeRatio, c.pan, c.mono, c.panMode,
+            return (c.playing, c.looping, c.pitchScale, c.timeRatio, c.pan, c.mono, c.panMode, c.volume,
                     c.saturate, c.drive,
                     c.regionStart, c.regionEnd, c.cursor, r, c.generation, c.seekEpoch,
                     c.stretcher, c.src0, c.src1, c.srcFrames)
@@ -349,6 +353,7 @@ final class PlaybackCore: @unchecked Sendable {
         if outCount > 0 {
             writeServed(dst0: dst0, dst1: dst1, count: outCount,
                         pan: snap.pan, mono: snap.mono, panMode: snap.panMode,
+                        volume: snap.volume,
                         saturate: snap.saturate, drive: snap.drive)
         }
         if outCount < frameCountInt {
@@ -395,6 +400,7 @@ final class PlaybackCore: @unchecked Sendable {
     private func writeServed(dst0: UnsafeMutablePointer<Float>?,
                              dst1: UnsafeMutablePointer<Float>?,
                              count: Int, pan: Double, mono: Bool, panMode: PanMode,
+                             volume: Float,
                              saturate: Bool, drive: Double) {
         let s0 = scratch0, s1 = scratch1
         if let d0 = dst0, let d1 = dst1 {
@@ -449,10 +455,24 @@ final class PlaybackCore: @unchecked Sendable {
             }
         }
 
-        // Soft-clip: tanh bends peaks toward ±1 without ever crossing it,
-        // adding gentle harmonic "warmth/loudness". Run through a 4× polyphase
-        // oversampler so the harmonics don't fold back as aliasing at high
-        // drive. The downstream peak limiter still guarantees the ceiling.
+        // Master volume, applied here (not on the system mixer) so the
+        // saturator below can soft-clip whatever the boost pushed past ±1.
+        // 200% would otherwise hit the hard-clip limiter at the graph's tail —
+        // wasted, because by the time it gets there the waveform is already
+        // squared.
+        if volume != 1.0 {
+            if let d0 = dst0 {
+                for i in 0..<count { d0[i] *= volume }
+            }
+            if let d1 = dst1 {
+                for i in 0..<count { d1[i] *= volume }
+            }
+        }
+
+        // Soft-clip: tanh bends peaks toward ±1 without ever crossing it.
+        // Sits *after* the volume so a 200% boost gets gently rolled back to
+        // the ceiling instead of hard-clipping at the limiter. Oversampled 4×
+        // so high-order harmonics don't alias back into the audible band.
         if saturate {
             let d = Float(drive)
             if let d0 = dst0 {

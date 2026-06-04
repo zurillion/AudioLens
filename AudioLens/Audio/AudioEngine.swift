@@ -101,6 +101,10 @@ final class AudioEngine {
         // when loading a second file mid-playback). Per-file rebuilds only
         // touch the source → eq → mixer half.
         let mixer = engine.mainMixerNode
+        // Volume is applied inside PlaybackCore so it lands *before* the
+        // saturator (see writeServed). The system mixer no longer scales —
+        // it's just a graph joint with unity gain.
+        mixer.outputVolume = 1.0
         let outputFormat = mixer.outputFormat(forBus: 0)
         engine.disconnectNodeOutput(mixer)
         engine.connect(mixer, to: limiter, format: outputFormat)
@@ -585,9 +589,19 @@ final class AudioEngine {
     // MARK: - Output
 
     /// Output volume. 0.0 = silent, 1.0 = unity, up to 2.0 (200%).
+    ///
+    /// Applied inside PlaybackCore, *before* the saturator. With the system
+    /// mixer pinned at unity (see init), a 200% boost that would otherwise
+    /// hard-clip at the limiter instead gets gently rolled back to ±1 by the
+    /// tanh stage. The mixer no longer scales anything; it's just a graph
+    /// joint.
+    private var currentVolume: Float = 1.0
     var volume: Float {
-        get { engine.mainMixerNode.outputVolume }
-        set { engine.mainMixerNode.outputVolume = max(0, min(2.0, newValue)) }
+        get { currentVolume }
+        set {
+            currentVolume = max(0, min(2.0, newValue))
+            core.setVolume(currentVolume)
+        }
     }
 
     private var currentPan: Double = 0
