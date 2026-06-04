@@ -490,12 +490,17 @@ final class WaveformView: NSView {
         needsDisplay = true
     }
 
-    /// Re-arm auto-follow and snap the window so the playhead sits at 15% from
-    /// the left. Called when the user clicks the "follow" button in the
-    /// transport. Always reframes — even when already armed and the playhead
-    /// is technically inside the window — so a click on a lit button still
-    /// gives visible feedback (the playhead jumps to a known position).
-    func enableAutoFollow() {
+    /// Flip the auto-follow state. Called by the toolbar follow button.
+    ///
+    /// - on → off: just switch off (no scrolling — the user wanted to stay
+    ///   wherever they are now).
+    /// - off → on: switch back on AND snap the window so the playhead sits at
+    ///   15% from the left, so the user sees what they're now following.
+    func toggleAutoFollow() {
+        if autoFollowPlayhead {
+            autoFollowPlayhead = false
+            return
+        }
         autoFollowPlayhead = true
         guard totalFrames > 0, visibleLength < totalFrames else { return }
         let len = visibleEnd - visibleStart

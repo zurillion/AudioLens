@@ -218,6 +218,10 @@ final class TransportView: NSView {
     func setFollowPlayhead(on: Bool) {
         followButton.contentTintColor = on ? Self.followOnFg : Self.followOffFg
         followButton.layer?.backgroundColor = (on ? Self.followOnBg : NSColor.clear).cgColor
+        // Belt-and-suspenders: a clearly different overall opacity in case
+        // contentTintColor / layer background aren't producing visible
+        // differentiation on a given system.
+        followButton.alphaValue = on ? 1.0 : 0.55
     }
 }
 

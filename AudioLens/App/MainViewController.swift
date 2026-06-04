@@ -120,7 +120,7 @@ final class MainViewController: NSViewController {
 
         transportView.onZoomIn = { [weak self] in self?.waveformView.zoomInCentered() }
         transportView.onZoomOut = { [weak self] in self?.waveformView.zoomOutCentered() }
-        transportView.onFollowTapped = { [weak self] in self?.waveformView.enableAutoFollow() }
+        transportView.onFollowTapped = { [weak self] in self?.waveformView.toggleAutoFollow() }
         waveformView.onAutoFollowChanged = { [weak self] on in
             self?.transportView.setFollowPlayhead(on: on)
         }
