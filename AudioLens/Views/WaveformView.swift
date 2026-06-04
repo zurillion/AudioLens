@@ -49,6 +49,12 @@ final class WaveformView: NSView {
     private var loadTask: Task<Void, Never>?
     private var overviewGeneration = 0
 
+    /// True from the moment a load is requested until the first overview slice
+    /// (or the cached overview) is ready. While set, the body shows "Loading…".
+    private var isLoading = false {
+        didSet { needsDisplay = true }
+    }
+
     // MARK: - Interaction state
 
     var selection: Selection = .whole {
@@ -136,11 +142,43 @@ final class WaveformView: NSView {
 
     // MARK: - Loading the overview
 
+    /// Called as soon as a file open/drop begins — before the (possibly slow)
+    /// decode — so the body shows "Loading…" and the previous waveform is
+    /// cleared right away rather than lingering under the new one.
+    func beginLoading() {
+        loadTask?.cancel()
+        overviewGeneration &+= 1   // invalidate any in-flight apply
+        isLoading = true
+        mins = []
+        maxs = []
+        bucketCount = 0
+        validBuckets = 0
+        totalFrames = 0
+        trimStartFrame = 0
+        trimEndFrame = 0
+        playheadFrame = 0
+        selection = .whole
+        bookmarks = []
+        dragMode = .none
+        dragStartPixel = nil
+        dragCurrentPixel = nil
+        positionPlayhead()   // totalFrames == 0 → hides the playhead line
+        needsDisplay = true
+    }
+
+    /// Clear the loading state without data (e.g. a decode error), so "Loading…"
+    /// doesn't linger forever.
+    func cancelLoading() {
+        isLoading = false
+        needsDisplay = true
+    }
+
     func setBuffer(_ buffer: AVAudioPCMBuffer, url: URL?) {
         loadTask?.cancel()
         overviewGeneration &+= 1
         let generation = overviewGeneration
 
+        isLoading = true
         totalFrames = AVAudioFramePosition(buffer.frameLength)
         trimStartFrame = 0
         trimEndFrame = totalFrames
@@ -183,6 +221,8 @@ final class WaveformView: NSView {
         self.maxs = maxs
         self.validBuckets = valid
         self.bucketCount = total
+        // The first usable slice (or the cached overview) clears "Loading…".
+        if valid > 0 { isLoading = false }
         needsDisplay = true
     }
 
@@ -341,6 +381,12 @@ final class WaveformView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
+        // While decoding / computing the overview, show only "Loading…".
+        if isLoading && validBuckets == 0 {
+            drawLoadingText()
+            return
+        }
+
         drawWaveform(ctx)
         drawTrim(ctx)
 
@@ -355,6 +401,21 @@ final class WaveformView: NSView {
 
         drawBookmarks(ctx)
         // The playhead is a separate layer (positionPlayhead), not drawn here.
+    }
+
+    /// Centered "Loading…" in blue, shown while the file decodes / the overview
+    /// is computed. Drawn via NSAttributedString, which respects the flipped
+    /// view's coordinate system inside `draw(_:)`.
+    private func drawLoadingText() {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 20, weight: .medium),
+            .foregroundColor: NSColor.systemBlue,
+        ]
+        let attr = NSAttributedString(string: "Loading…", attributes: attrs)
+        let size = attr.size()
+        let origin = CGPoint(x: (bounds.width - size.width) / 2,
+                             y: (bounds.height - size.height) / 2)
+        attr.draw(at: origin)
     }
 
     override func layout() {

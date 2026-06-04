@@ -134,6 +134,17 @@ final class MainViewController: NSViewController {
         transportView.updatePlayheadDisplay(currentFrame: frame)
     }
 
+    /// Called the moment a load begins (before decode) so the preview shows
+    /// "Loading…" and the previous waveform is cleared right away.
+    func willBeginLoading() {
+        waveformView.beginLoading()
+    }
+
+    /// Called if the load fails, to clear the "Loading…" indicator.
+    func didFailLoading() {
+        waveformView.cancelLoading()
+    }
+
     func didLoadAudio() {
         if let buffer = audioEngine.fullBuffer {
             waveformView.setBuffer(buffer, url: audioEngine.sourceURL)

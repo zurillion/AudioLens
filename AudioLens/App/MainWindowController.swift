@@ -160,11 +160,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func load(url: URL) async {
+        rootViewController.willBeginLoading()
         do {
             try await audioEngine.load(url: url)
             rootViewController.didLoadAudio()
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
         } catch {
+            rootViewController.didFailLoading()
             showError(error)
         }
     }
