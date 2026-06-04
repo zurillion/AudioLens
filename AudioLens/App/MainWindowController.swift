@@ -19,15 +19,9 @@ final class AudioLensWindow: NSWindow {
     var onKeyboardAction: ((KeyboardAction) -> Void)?
 
     override func sendEvent(_ event: NSEvent) {
-        if event.type == .keyDown {
-            if let action = KeyBindings.shared.action(for: event) {
-                NSLog("[AudioLens] keyDown code=%d repeat=%d -> %@",
-                      Int(event.keyCode), event.isARepeat ? 1 : 0, "\(action)")
-                onKeyboardAction?(action)
-                return
-            } else {
-                NSLog("[AudioLens] keyDown code=%d -> (no binding)", Int(event.keyCode))
-            }
+        if event.type == .keyDown, let action = KeyBindings.shared.action(for: event) {
+            onKeyboardAction?(action)
+            return
         }
         super.sendEvent(event)
     }

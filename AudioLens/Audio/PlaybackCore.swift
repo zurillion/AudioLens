@@ -35,6 +35,11 @@ final class PlaybackCore: @unchecked Sendable {
         var resetRequest = false
         var finished = false
         var generation: UInt64 = 0
+        /// Bumped by any main-thread cursor change (seek / region-with-seek /
+        /// install). The render publishes its advanced cursor only if this is
+        /// unchanged since its snapshot, so a seek that lands mid-render isn't
+        /// clobbered by the render's stale cursor write-back.
+        var seekEpoch: UInt64 = 0
         var buffer: AVAudioPCMBuffer?           // retained for liveness only
         var stretcher: RubberBandStretcher?
         var src0: UnsafeMutablePointer<Float>?
@@ -105,6 +110,7 @@ final class PlaybackCore: @unchecked Sendable {
             c.finished = false
             c.resetRequest = false
             c.generation &+= 1
+            c.seekEpoch &+= 1
         }
     }
 
@@ -126,6 +132,7 @@ final class PlaybackCore: @unchecked Sendable {
                 c.playhead = start
                 c.resetRequest = true
                 c.finished = false
+                c.seekEpoch &+= 1
             }
         }
     }
@@ -140,6 +147,7 @@ final class PlaybackCore: @unchecked Sendable {
             c.playhead = frame
             c.resetRequest = true
             c.finished = false
+            c.seekEpoch &+= 1
         }
     }
 
@@ -159,13 +167,14 @@ final class PlaybackCore: @unchecked Sendable {
             (c: inout Control) -> (playing: Bool, looping: Bool, pitch: Double, time: Double,
                                    regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition,
                                    cursor: AVAudioFramePosition, reset: Bool, generation: UInt64,
+                                   seekEpoch: UInt64,
                                    stretcher: RubberBandStretcher?,
                                    src0: UnsafeMutablePointer<Float>?, src1: UnsafeMutablePointer<Float>?,
                                    srcFrames: AVAudioFramePosition) in
             let r = c.resetRequest
             c.resetRequest = false
             return (c.playing, c.looping, c.pitchScale, c.timeRatio,
-                    c.regionStart, c.regionEnd, c.cursor, r, c.generation,
+                    c.regionStart, c.regionEnd, c.cursor, r, c.generation, c.seekEpoch,
                     c.stretcher, c.src0, c.src1, c.srcFrames)
         }
 
@@ -309,7 +318,11 @@ final class PlaybackCore: @unchecked Sendable {
         let reachedEnd = inputDone && pendingCount == 0 && stretcher.available <= 0
 
         lock.withLockUnchecked { c in
-            if c.generation == snap.generation {
+            // Skip the write-back if a buffer reinstall or a seek happened while
+            // we were rendering — otherwise we'd clobber the new cursor with our
+            // stale, locally-advanced one (the "seek has no effect during play"
+            // bug).
+            if c.generation == snap.generation && c.seekEpoch == snap.seekEpoch {
                 c.cursor = cursor
                 c.playhead = cursor
                 if reachedEnd {
