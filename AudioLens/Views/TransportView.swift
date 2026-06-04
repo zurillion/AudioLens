@@ -13,15 +13,20 @@ final class TransportView: NSView {
     private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
     private let zoomOutButton = NSButton()
     private let zoomInButton = NSButton()
+    private let followButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "No file loaded")
     private let fileInfoLabel = NSTextField(labelWithString: "")
 
-    /// Wired by MainViewController to drive the waveform's zoom.
+    /// Wired by MainViewController to drive the waveform's zoom / follow.
     var onZoomIn: (() -> Void)?
     var onZoomOut: (() -> Void)?
+    var onFollowTapped: (() -> Void)?
 
     /// Soft green used for the filename and the file-info line beneath it.
     private static let fileColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
+    /// Tint colors for the follow toggle's lit / dim states.
+    private static let followOnColor = NSColor.controlAccentColor
+    private static let followOffColor = NSColor.tertiaryLabelColor
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
@@ -107,6 +112,14 @@ final class TransportView: NSView {
         zoomInButton.action = #selector(zoomInTapped(_:))
         zoomInButton.toolTip = "Zoom in (Cmd+scroll · double-click waveform to reset)"
 
+        followButton.image = NSImage(systemSymbolName: "scope",
+                                     accessibilityDescription: "Follow playhead")
+        followButton.bezelStyle = .rounded
+        followButton.target = self
+        followButton.action = #selector(followTapped(_:))
+        followButton.toolTip = "Follow playhead — scrolling disables, click re-enables"
+        followButton.contentTintColor = Self.followOnColor   // initially lit
+
         // Filename (green) with a smaller file-info line beneath it, pushed to
         // the trailing edge by a spacer. Both truncate before crowding the row.
         fileInfoLabel.textColor = Self.fileColor.withAlphaComponent(0.85)
@@ -126,7 +139,7 @@ final class TransportView: NSView {
 
         let stack = NSStackView(views: [
             playButton, stopButton, loopButton, bookmarkButton, bookmarksPopup, timeLabel,
-            zoomInButton, zoomOutButton,
+            zoomInButton, zoomOutButton, followButton,
             spacer, fileBlock
         ])
         stack.orientation = .horizontal
@@ -185,6 +198,12 @@ final class TransportView: NSView {
 
     @objc private func zoomInTapped(_ sender: NSButton) { onZoomIn?() }
     @objc private func zoomOutTapped(_ sender: NSButton) { onZoomOut?() }
+    @objc private func followTapped(_ sender: NSButton) { onFollowTapped?() }
+
+    /// Update the follow button's glow to match the waveform's actual state.
+    func setFollowPlayhead(on: Bool) {
+        followButton.contentTintColor = on ? Self.followOnColor : Self.followOffColor
+    }
 }
 
 extension TransportView: NSMenuDelegate {

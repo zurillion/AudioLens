@@ -67,7 +67,16 @@ final class WaveformView: NSView {
     /// During playback, scroll forward (DAW-style) when the playhead nears the
     /// right edge of the visible window. Turned off by any user pan/zoom; the
     /// "fit-to-view" gesture (double-click body) turns it back on.
-    private var autoFollowPlayhead = true
+    private var autoFollowPlayhead = true {
+        didSet {
+            guard oldValue != autoFollowPlayhead else { return }
+            onAutoFollowChanged?(autoFollowPlayhead)
+        }
+    }
+
+    /// Fires when the auto-follow state flips, so the transport can update its
+    /// "follow playhead" button glow.
+    var onAutoFollowChanged: ((Bool) -> Void)?
 
     /// Accumulator for incremental pinch deltas (the recognizer reports a
     /// running total during the gesture).
@@ -479,6 +488,24 @@ final class WaveformView: NSView {
         autoFollowPlayhead = true
         positionPlayhead()
         needsDisplay = true
+    }
+
+    /// Re-arm auto-follow and pull the playhead into view immediately. Called
+    /// when the user clicks the "follow" button in the transport.
+    func enableAutoFollow() {
+        autoFollowPlayhead = true
+        // If the playhead drifted off-window (typical after a manual scroll),
+        // jump so it sits at 15% of the current zoom window.
+        guard totalFrames > 0, visibleLength < totalFrames else { return }
+        if playheadFrame < visibleStart || playheadFrame >= visibleEnd {
+            let len = visibleEnd - visibleStart
+            let newStart = max(0, min(totalFrames - len,
+                playheadFrame - AVAudioFramePosition(Double(len) * 0.15)))
+            visibleStart = newStart
+            visibleEnd = visibleStart + len
+            positionPlayhead()
+            needsDisplay = true
+        }
     }
 
     /// Shift the visible window by `dxPixels` (positive = scroll forward).
