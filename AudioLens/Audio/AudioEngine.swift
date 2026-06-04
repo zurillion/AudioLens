@@ -323,6 +323,14 @@ final class AudioEngine {
         max(1, AVAudioFramePosition(sampleRate * 0.05))   // 50 ms
     }
 
+    /// Frames of bookmarks inside the accessible (trimmed) range, sorted
+    /// ascending. Bookmarks stranded outside the trim — e.g. placed before the
+    /// trim was moved over them — are unreachable and excluded from navigation,
+    /// so cycling skips them instead of piling up on the trim line.
+    private var accessibleBookmarkFrames: [AVAudioFramePosition] {
+        bookmarks.map { $0.frame }.filter { $0 >= trimStart && $0 <= trimEnd }
+    }
+
     func addBookmarkAtPlayhead() {
         addBookmark(at: currentFramePosition)
     }
@@ -391,10 +399,10 @@ final class AudioEngine {
         let candidates: [AVAudioFramePosition]
         switch selection {
         case .whole:
-            candidates = bookmarks.map { $0.frame }
+            candidates = accessibleBookmarkFrames
         case .region(let start, let length, _):
             let end = start + AVAudioFramePosition(length)
-            candidates = bookmarks.map { $0.frame }.filter { $0 >= start && $0 < end }
+            candidates = accessibleBookmarkFrames.filter { $0 >= start && $0 < end }
         }
         guard !candidates.isEmpty else { return }
         let basis = navigationBasis()
@@ -421,11 +429,11 @@ final class AudioEngine {
     }
 
     func goToFirstBookmark() {
-        if let first = bookmarks.first { seek(toFrame: first.frame) }
+        if let first = accessibleBookmarkFrames.first { seek(toFrame: first) }
     }
 
     func goToLastBookmark() {
-        if let last = bookmarks.last { seek(toFrame: last.frame) }
+        if let last = accessibleBookmarkFrames.last { seek(toFrame: last) }
     }
 
     /// Bookmarks as (frame, "hh:mm:ss:xx  name") for menus.

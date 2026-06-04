@@ -468,14 +468,19 @@ final class WaveformView: NSView {
         let bottomY = bounds.height
         for frame in bookmarks {
             let x = frameToPixel(frame)
-            ctx.setStrokeColor(Self.bookmarkColor.withAlphaComponent(0.9).cgColor)
+            // A bookmark stranded outside the trim is unreachable by navigation;
+            // draw it greyed (but still hit-testable, so it can be deleted).
+            let trimmed = frame < trimStartFrame || frame > trimEndFrame
+            let lineColor = trimmed ? Self.trimColor : Self.bookmarkColor
+            let flagColor = trimmed ? Self.trimColor : Self.bookmarkColor
+            ctx.setStrokeColor(lineColor.withAlphaComponent(trimmed ? 0.5 : 0.9).cgColor)
             ctx.setLineWidth(1)
             ctx.move(to: CGPoint(x: x, y: waveTop))
             ctx.addLine(to: CGPoint(x: x, y: waveBottom))
             ctx.strokePath()
 
             // Flag marker in the bottom strip.
-            ctx.setFillColor(Self.bookmarkColor.cgColor)
+            ctx.setFillColor(flagColor.withAlphaComponent(trimmed ? 0.5 : 1.0).cgColor)
             let markerTop = bottomY - Self.bottomStrip + 3
             let path = NSBezierPath()
             path.move(to: CGPoint(x: x, y: markerTop))
