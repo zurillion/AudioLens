@@ -25,7 +25,10 @@ final class TransportView: NSView {
     /// Cached so the follow button can refresh its background on theme change
     /// without needing a state push from the WaveformView.
     private var followIsOn = true
-    private var themeObserver: (any NSObjectProtocol)?
+    /// The notification callback runs in a nonisolated context; storing the
+    /// token as `nonisolated(unsafe)` lets the nonisolated `deinit` read it
+    /// (NotificationCenter.removeObserver is itself thread-safe).
+    private nonisolated(unsafe) var themeObserver: (any NSObjectProtocol)?
 
     /// Two-tone follow-button foreground. The "on" background comes from the
     /// current theme (ThemeManager.followOnColor) and is applied in
@@ -40,7 +43,11 @@ final class TransportView: NSView {
         setupSubviews()
         themeObserver = NotificationCenter.default.addObserver(
             forName: .themeChanged, object: nil, queue: .main
-        ) { [weak self] _ in self?.applyTheme() }
+        ) { [weak self] _ in
+            // queue: .main runs us on the main thread, but the closure is
+            // typed as nonisolated — hop into MainActor isolation explicitly.
+            MainActor.assumeIsolated { self?.applyTheme() }
+        }
     }
 
     required init?(coder: NSCoder) {

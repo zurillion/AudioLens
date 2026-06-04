@@ -145,7 +145,9 @@ final class WaveformView: NSView {
     private var draggedBookmarkFrame: AVAudioFramePosition = 0
     private var bookmarkDidMove = false
 
-    private var themeObserver: (any NSObjectProtocol)?
+    /// Notification token: `nonisolated(unsafe)` so the nonisolated `deinit`
+    /// can read it (NotificationCenter.removeObserver is thread-safe).
+    private nonisolated(unsafe) var themeObserver: (any NSObjectProtocol)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -174,8 +176,9 @@ final class WaveformView: NSView {
             forName: .themeChanged, object: nil, queue: .main
         ) { [weak self] _ in
             // Theme only changes the waveform stroke colour; everything else
-            // is sourced fresh on each draw, so a redraw is all we need.
-            self?.needsDisplay = true
+            // is sourced fresh on each draw, so a redraw is all we need. The
+            // closure is nonisolated, hop onto MainActor for `needsDisplay`.
+            MainActor.assumeIsolated { self?.needsDisplay = true }
         }
     }
 
