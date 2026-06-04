@@ -344,14 +344,23 @@ final class AudioEngine {
     }
 
     private func navigateBookmark(forward: Bool) {
-        guard !bookmarks.isEmpty else { return }
+        // When a region is active, cycle only among bookmarks inside it (if any
+        // exist); otherwise cycle through all bookmarks.
+        let candidates: [AVAudioFramePosition]
+        switch selection {
+        case .whole:
+            candidates = bookmarks.map { $0.frame }
+        case .region(let start, let length, _):
+            let end = start + AVAudioFramePosition(length)
+            candidates = bookmarks.map { $0.frame }.filter { $0 >= start && $0 < end }
+        }
+        guard !candidates.isEmpty else { return }
         let basis = navigationBasis()
-        let frames = bookmarks.map { $0.frame }
         let target: AVAudioFramePosition
         if forward {
-            target = frames.first(where: { $0 > basis + bookmarkTolerance }) ?? frames.first!
+            target = candidates.first(where: { $0 > basis + bookmarkTolerance }) ?? candidates.first!
         } else {
-            target = frames.last(where: { $0 < basis - bookmarkTolerance }) ?? frames.last!
+            target = candidates.last(where: { $0 < basis - bookmarkTolerance }) ?? candidates.last!
         }
         seek(toFrame: target)
         // seek() clears the session; re-establish it anchored at the target.

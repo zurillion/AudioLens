@@ -64,13 +64,12 @@ final class TransportView: NSView {
         bookmarkButton.action = #selector(addBookmark(_:))
         bookmarkButton.toolTip = "Add a bookmark at the playhead (⌘B)"
 
-        bookmarksMenuButton.image = NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "Bookmarks")
-        bookmarksMenuButton.title = ""
-        bookmarksMenuButton.imagePosition = .imageOnly
+        bookmarksMenuButton.title = "Bookmarks ▾"
+        bookmarksMenuButton.imagePosition = .noImage
         bookmarksMenuButton.bezelStyle = .rounded
         bookmarksMenuButton.target = self
         bookmarksMenuButton.action = #selector(showBookmarksMenu(_:))
-        bookmarksMenuButton.toolTip = "Bookmarks"
+        bookmarksMenuButton.toolTip = "Show bookmarks"
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
