@@ -490,18 +490,19 @@ final class WaveformView: NSView {
         needsDisplay = true
     }
 
-    /// Re-arm auto-follow and pull the playhead into view immediately. Called
-    /// when the user clicks the "follow" button in the transport.
+    /// Re-arm auto-follow and snap the window so the playhead sits at 15% from
+    /// the left. Called when the user clicks the "follow" button in the
+    /// transport. Always reframes — even when already armed and the playhead
+    /// is technically inside the window — so a click on a lit button still
+    /// gives visible feedback (the playhead jumps to a known position).
     func enableAutoFollow() {
         autoFollowPlayhead = true
-        // If the playhead drifted off-window (typical after a manual scroll),
-        // jump so it sits at 15% of the current zoom window.
         guard totalFrames > 0, visibleLength < totalFrames else { return }
-        if playheadFrame < visibleStart || playheadFrame >= visibleEnd {
-            let len = visibleEnd - visibleStart
-            let newStart = max(0, min(totalFrames - len,
-                playheadFrame - AVAudioFramePosition(Double(len) * 0.15)))
-            visibleStart = newStart
+        let len = visibleEnd - visibleStart
+        let target = max(0, min(totalFrames - len,
+            playheadFrame - AVAudioFramePosition(Double(len) * 0.15)))
+        if target != visibleStart {
+            visibleStart = target
             visibleEnd = visibleStart + len
             positionPlayhead()
             needsDisplay = true

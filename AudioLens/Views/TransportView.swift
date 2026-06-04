@@ -24,9 +24,13 @@ final class TransportView: NSView {
 
     /// Soft green used for the filename and the file-info line beneath it.
     private static let fileColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
-    /// Tint colors for the follow toggle's lit / dim states.
-    private static let followOnColor = NSColor.controlAccentColor
-    private static let followOffColor = NSColor.tertiaryLabelColor
+    /// Two-tone follow-button state. "On" is a strong filled chip
+    /// (system blue background, white icon) because a `.rounded` bezel
+    /// swallows mere `contentTintColor` changes — without the background
+    /// fill the lit state was indistinguishable from off on most setups.
+    private static let followOnFg = NSColor.white
+    private static let followOnBg = NSColor.systemBlue
+    private static let followOffFg = NSColor.tertiaryLabelColor
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
@@ -112,13 +116,23 @@ final class TransportView: NSView {
         zoomInButton.action = #selector(zoomInTapped(_:))
         zoomInButton.toolTip = "Zoom in (Cmd+scroll · double-click waveform to reset)"
 
+        let scopeConfig = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         followButton.image = NSImage(systemSymbolName: "scope",
-                                     accessibilityDescription: "Follow playhead")
-        followButton.bezelStyle = .rounded
+                                     accessibilityDescription: "Follow playhead")?
+            .withSymbolConfiguration(scopeConfig)
+        // Borderless + custom layer background gives us a clear lit chip; the
+        // standard bezel applied its own appearance over `contentTintColor`,
+        // washing the lit / dim distinction out.
+        followButton.isBordered = false
+        followButton.wantsLayer = true
+        followButton.layer?.cornerRadius = 5
+        followButton.layer?.masksToBounds = true
         followButton.target = self
         followButton.action = #selector(followTapped(_:))
         followButton.toolTip = "Follow playhead — scrolling disables, click re-enables"
-        followButton.contentTintColor = Self.followOnColor   // initially lit
+        followButton.widthAnchor.constraint(equalToConstant: 30).isActive = true
+        followButton.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        setFollowPlayhead(on: true)   // initially lit
 
         // Filename (green) with a smaller file-info line beneath it, pushed to
         // the trailing edge by a spacer. Both truncate before crowding the row.
@@ -202,7 +216,8 @@ final class TransportView: NSView {
 
     /// Update the follow button's glow to match the waveform's actual state.
     func setFollowPlayhead(on: Bool) {
-        followButton.contentTintColor = on ? Self.followOnColor : Self.followOffColor
+        followButton.contentTintColor = on ? Self.followOnFg : Self.followOffFg
+        followButton.layer?.backgroundColor = (on ? Self.followOnBg : NSColor.clear).cgColor
     }
 }
 
