@@ -5,6 +5,7 @@ final class EQView: NSView {
 
     private let audioEngine: AudioEngine
     private let bandSelector = NSSegmentedControl()
+    private let presetPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let resetButton = NSButton(title: "Reset", target: nil, action: nil)
     private let slidersStack = NSStackView()
     private var bandSliders: [NSSlider] = []
@@ -37,6 +38,21 @@ final class EQView: NSView {
         bandSelector.target = self
         bandSelector.action = #selector(bandCountChanged(_:))
 
+        // Pull-down menu of tonal presets. The first item is the button's
+        // title (pull-down convention); the rest apply a preset on selection.
+        let presetMenu = NSMenu()
+        presetMenu.addItem(withTitle: "Presets", action: nil, keyEquivalent: "")
+        for (i, preset) in AudioEngine.eqPresets.enumerated() {
+            let item = NSMenuItem(title: preset.name,
+                                  action: #selector(presetSelected(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = i
+            presetMenu.addItem(item)
+        }
+        presetPopup.menu = presetMenu
+        presetPopup.controlSize = .small
+        presetPopup.toolTip = "Apply a tonal preset (works at any band count)."
+
         resetButton.target = self
         resetButton.action = #selector(resetTapped(_:))
         resetButton.bezelStyle = .rounded
@@ -45,7 +61,7 @@ final class EQView: NSView {
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let controlsRow = NSStackView(views: [bandsLabel, bandSelector, spacer, resetButton])
+        let controlsRow = NSStackView(views: [bandsLabel, bandSelector, presetPopup, spacer, resetButton])
         controlsRow.orientation = .horizontal
         controlsRow.alignment = .centerY
         controlsRow.spacing = 8
@@ -83,7 +99,9 @@ final class EQView: NSView {
         bandSliders.removeAll()
 
         let frequencies = audioEngine.eqFrequencies
-        let narrow = frequencies.count > 12   // hide labels on every column when dense
+        // Every band is labeled. With many bands, horizontal labels would
+        // overlap, so they're drawn vertically (rotated) past a threshold.
+        let dense = frequencies.count > 12
         for (index, freq) in frequencies.enumerated() {
             let slider = NSSlider(value: Double(audioEngine.eq.bands[index].gain),
                                   minValue: -24, maxValue: 24,
@@ -93,16 +111,32 @@ final class EQView: NSView {
             slider.isContinuous = true
             bandSliders.append(slider)
 
-            let showLabel = !narrow || index % 2 == 0
-            let label = NSTextField(labelWithString: showLabel ? Self.formatFrequency(freq) : " ")
-            label.alignment = .center
-            label.font = .systemFont(ofSize: 9)
+            let text = Self.formatFrequency(freq)
+            let labelView: NSView
+            if dense {
+                labelView = VerticalTextLabel(string: text,
+                                              font: .systemFont(ofSize: 9),
+                                              color: .labelColor)
+            } else {
+                let label = NSTextField(labelWithString: text)
+                label.alignment = .center
+                label.font = .systemFont(ofSize: 9)
+                labelView = label
+            }
 
-            let column = NSStackView(views: [slider, label])
+            let column = NSStackView(views: [slider, labelView])
             column.orientation = .vertical
             column.alignment = .centerX
             column.spacing = 3
             slidersStack.addArrangedSubview(column)
+        }
+    }
+
+    /// Pull every slider's position from the engine (after a preset / band-count
+    /// change), so the UI reflects the gains actually applied.
+    private func syncSlidersToEngine() {
+        for slider in bandSliders where slider.tag < audioEngine.eq.bands.count {
+            slider.doubleValue = Double(audioEngine.eq.bands[slider.tag].gain)
         }
     }
 
@@ -121,6 +155,13 @@ final class EQView: NSView {
         rebuildBands()
     }
 
+    @objc private func presetSelected(_ sender: NSMenuItem) {
+        let idx = sender.tag
+        guard idx >= 0, idx < AudioEngine.eqPresets.count else { return }
+        audioEngine.applyEQPreset(AudioEngine.eqPresets[idx])
+        syncSlidersToEngine()
+    }
+
     @objc private func resetTapped(_ sender: NSButton) {
         audioEngine.resetEQ()
         for slider in bandSliders {
@@ -134,5 +175,37 @@ final class EQView: NSView {
             return k >= 10 ? String(format: "%.0fk", k) : String(format: "%.1fk", k)
         }
         return String(format: "%.0f", frequency)
+    }
+}
+
+/// A label that draws its text rotated 90° (reading bottom-to-top), so dense
+/// EQ-band labels fit in a narrow column without overlapping their neighbours.
+private final class VerticalTextLabel: NSView {
+    private let attributed: NSAttributedString
+    private let textSize: NSSize
+
+    init(string: String, font: NSFont, color: NSColor) {
+        attributed = NSAttributedString(string: string,
+                                        attributes: [.font: font, .foregroundColor: color])
+        textSize = attributed.size()
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    // The on-screen footprint is the text box rotated 90°: width/height swap.
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: ceil(textSize.height), height: ceil(textSize.width))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        ctx.saveGState()
+        // Move to the bottom-right corner, rotate 90° CCW; the string then runs
+        // upward and fills the (swapped) bounds.
+        ctx.translateBy(x: bounds.width, y: 0)
+        ctx.rotate(by: .pi / 2)
+        attributed.draw(at: .zero)
+        ctx.restoreGState()
     }
 }

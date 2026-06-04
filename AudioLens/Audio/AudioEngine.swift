@@ -116,6 +116,18 @@ final class AudioEngine {
         }
     }
 
+    /// The built-in tonal presets, band-count independent.
+    static let eqPresets = EQPreset.all
+
+    /// Apply a preset by sampling its curve at each active band's center
+    /// frequency. Works for any band count.
+    func applyEQPreset(_ preset: EQPreset) {
+        for i in 0..<eqBandCount {
+            let g = preset.gain(atFrequency: Double(eqFrequencies[i]))
+            eq.bands[i].gain = max(-24, min(24, g))
+        }
+    }
+
     // MARK: - Loading
 
     func load(url: URL) async throws {
