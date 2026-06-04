@@ -6,6 +6,7 @@ final class MainViewController: NSViewController {
     private let audioEngine: AudioEngine
     private let waveformView: WaveformView
     private let transportView: TransportView
+    private let outputView: OutputView
     private let eqView: EQView
     private let pitchTimeView: PitchTimeView
     private var playheadTimer: Timer?
@@ -18,6 +19,7 @@ final class MainViewController: NSViewController {
         self.audioEngine = audioEngine
         self.waveformView = WaveformView()
         self.transportView = TransportView(audioEngine: audioEngine)
+        self.outputView = OutputView(audioEngine: audioEngine)
         self.eqView = EQView(audioEngine: audioEngine)
         self.pitchTimeView = PitchTimeView(audioEngine: audioEngine)
         super.init(nibName: nil, bundle: nil)
@@ -35,10 +37,11 @@ final class MainViewController: NSViewController {
 
         let waveContainer = waveformView
         let transport = transportView
+        let output = outputView
         let pitchTime = pitchTimeView
         let eq = eqView
 
-        for v in [waveContainer, transport, pitchTime, eq] {
+        for v in [waveContainer, transport, output, pitchTime, eq] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -54,7 +57,12 @@ final class MainViewController: NSViewController {
             transport.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             transport.heightAnchor.constraint(equalToConstant: 48),
 
-            pitchTime.topAnchor.constraint(equalTo: transport.bottomAnchor, constant: 12),
+            output.topAnchor.constraint(equalTo: transport.bottomAnchor, constant: 12),
+            output.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            output.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            output.heightAnchor.constraint(equalToConstant: 40),
+
+            pitchTime.topAnchor.constraint(equalTo: output.bottomAnchor, constant: 12),
             pitchTime.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             pitchTime.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             pitchTime.heightAnchor.constraint(equalToConstant: 140),

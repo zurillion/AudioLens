@@ -28,6 +28,8 @@ final class PlaybackCore: @unchecked Sendable {
         var looping = false
         var pitchScale: Double = 1.0
         var timeRatio: Double = 1.0
+        var pan: Double = 0          // -1 = L, 0 = center, +1 = R
+        var mono: Bool = false       // sum L+R to mono before panning
         var regionStart: AVAudioFramePosition = 0
         var regionEnd: AVAudioFramePosition = 0
         var cursor: AVAudioFramePosition = 0
@@ -157,6 +159,8 @@ final class PlaybackCore: @unchecked Sendable {
 
     func setPitchScale(_ scale: Double) { lock.withLockUnchecked { $0.pitchScale = scale } }
     func setTimeRatio(_ ratio: Double) { lock.withLockUnchecked { $0.timeRatio = ratio } }
+    func setPan(_ pan: Double) { lock.withLockUnchecked { $0.pan = pan } }
+    func setMono(_ mono: Bool) { lock.withLockUnchecked { $0.mono = mono } }
 
     var playhead: AVAudioFramePosition { lock.withLockUnchecked { $0.playhead } }
     var isFinished: Bool { lock.withLockUnchecked { $0.finished } }
@@ -169,6 +173,7 @@ final class PlaybackCore: @unchecked Sendable {
 
         let snap = lock.withLockUnchecked {
             (c: inout Control) -> (playing: Bool, looping: Bool, pitch: Double, time: Double,
+                                   pan: Double, mono: Bool,
                                    regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition,
                                    cursor: AVAudioFramePosition, reset: Bool, generation: UInt64,
                                    seekEpoch: UInt64,
@@ -177,7 +182,7 @@ final class PlaybackCore: @unchecked Sendable {
                                    srcFrames: AVAudioFramePosition) in
             let r = c.resetRequest
             c.resetRequest = false
-            return (c.playing, c.looping, c.pitchScale, c.timeRatio,
+            return (c.playing, c.looping, c.pitchScale, c.timeRatio, c.pan, c.mono,
                     c.regionStart, c.regionEnd, c.cursor, r, c.generation, c.seekEpoch,
                     c.stretcher, c.src0, c.src1, c.srcFrames)
         }
@@ -317,8 +322,7 @@ final class PlaybackCore: @unchecked Sendable {
         let dst1 = useChannels > 1 ? outPtrs[1] : nil
         let outCount = min(pendingCount, frameCountInt)
         if outCount > 0 {
-            dst0?.update(from: scratch0, count: outCount)
-            dst1?.update(from: scratch1, count: outCount)
+            writeServed(dst0: dst0, dst1: dst1, count: outCount, pan: snap.pan, mono: snap.mono)
         }
         if outCount < frameCountInt {
             dst0?.advanced(by: outCount).update(repeating: 0, count: frameCountInt - outCount)
@@ -356,5 +360,45 @@ final class PlaybackCore: @unchecked Sendable {
             }
         }
         return noErr
+    }
+
+    /// Copy `count` frames from the scratch into the output, applying mono
+    /// summing and/or pan. Gains depend only on the snapshot, so they're
+    /// computed once per render — the per-sample loop is pure arithmetic.
+    private func writeServed(dst0: UnsafeMutablePointer<Float>?,
+                             dst1: UnsafeMutablePointer<Float>?,
+                             count: Int, pan: Double, mono: Bool) {
+        let s0 = scratch0, s1 = scratch1
+        if let d0 = dst0, let d1 = dst1 {
+            if mono {
+                // Sum to mono, then equal-power pan: constant total power as the
+                // image moves, ~0.707 per side at center.
+                let angle = (pan + 1.0) * 0.25 * Double.pi   // [-1,1] → [0, π/2]
+                let lg = Float(cos(angle)), rg = Float(sin(angle))
+                for i in 0..<count {
+                    let m = 0.5 * (s0[i] + s1[i])
+                    d0[i] = m * lg
+                    d1[i] = m * rg
+                }
+            } else if pan != 0 {
+                // Stereo balance: attenuate the channel away from the pan side.
+                let lg: Float = pan <= 0 ? 1 : Float(1.0 - pan)
+                let rg: Float = pan >= 0 ? 1 : Float(1.0 + pan)
+                for i in 0..<count {
+                    d0[i] = s0[i] * lg
+                    d1[i] = s1[i] * rg
+                }
+            } else {
+                d0.update(from: s0, count: count)
+                d1.update(from: s1, count: count)
+            }
+        } else if let d0 = dst0 {
+            // Mono output device.
+            if mono {
+                for i in 0..<count { d0[i] = 0.5 * (s0[i] + s1[i]) }
+            } else {
+                d0.update(from: s0, count: count)
+            }
+        }
     }
 }

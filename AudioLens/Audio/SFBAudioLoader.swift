@@ -1,5 +1,37 @@
 import AVFoundation
+import AudioToolbox
 import SFBAudioEngine
+
+/// Lightweight, value-type description of the *original* file (before AudioLens
+/// resamples it to its canonical processing format). Shown in the transport.
+struct AudioFileInfo: Sendable {
+    let formatName: String     // e.g. "WAV", "FLAC", "MP3"
+    let sampleRate: Double     // original sample rate, Hz
+    let channelCount: Int      // original channel count
+    let bitDepth: Int          // 0 when not applicable (compressed formats)
+
+    var channelDescription: String {
+        switch channelCount {
+        case 1:  return "Mono"
+        case 2:  return "Stereo"
+        default: return "\(channelCount) ch"
+        }
+    }
+
+    /// "WAV · 44.1 kHz · Stereo · 16-bit"
+    var summary: String {
+        var parts = [formatName, Self.formatSampleRate(sampleRate), channelDescription]
+        if bitDepth > 0 { parts.append("\(bitDepth)-bit") }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func formatSampleRate(_ hz: Double) -> String {
+        let khz = hz / 1000.0
+        return khz == khz.rounded()
+            ? String(format: "%.0f kHz", khz)
+            : String(format: "%.1f kHz", khz)
+    }
+}
 
 /// Decodes any supported audio file into a single in-memory `AVAudioPCMBuffer`
 /// in a canonical processing format (float32 non-interleaved stereo at the
@@ -28,11 +60,12 @@ enum SFBAudioLoader {
     private static let targetChunkCapacity: AVAudioFrameCount = 65_536
     private static let supportedSampleRates: Set<Double> = [22_050, 44_100, 48_000, 88_200, 96_000]
 
-    static func decode(url: URL) throws -> AVAudioPCMBuffer {
+    static func decode(url: URL) throws -> (buffer: AVAudioPCMBuffer, info: AudioFileInfo) {
         let decoder = try AudioDecoder(url: url)
         try decoder.open()
         defer { try? decoder.close() }
 
+        let info = fileInfo(decoder: decoder, url: url)
         let sourceFormat = decoder.processingFormat
         let targetRate = supportedSampleRates.contains(sourceFormat.sampleRate)
             ? sourceFormat.sampleRate
@@ -58,14 +91,47 @@ enum SFBAudioLoader {
                 var error: NSError?
                 let status = converter.convert(to: output, error: &error, withInputFrom: inputBlock)
                 if status != .error, output.frameLength > 0 {
-                    return output
+                    return (output, info)
                 }
                 // .haveData (under-estimated) or .error → fall through to the
                 // robust accumulation path with a fresh decoder/converter.
             }
         }
 
-        return try decodeByAccumulation(url: url, targetFormat: targetFormat)
+        let buffer = try decodeByAccumulation(url: url, targetFormat: targetFormat)
+        return (buffer, info)
+    }
+
+    // MARK: - File info
+
+    private static func fileInfo(decoder: AudioDecoder, url: URL) -> AudioFileInfo {
+        // The decoder decodes at the file's native rate/channels, so the
+        // processing format carries the original rate and channel count.
+        // The source format additionally carries the encoded bit depth / codec.
+        let proc = decoder.processingFormat
+        let src = decoder.sourceFormat
+        let asbd = src.streamDescription.pointee
+        let isPCM = asbd.mFormatID == kAudioFormatLinearPCM
+        return AudioFileInfo(
+            formatName: formatName(url: url, formatID: asbd.mFormatID),
+            sampleRate: proc.sampleRate > 0 ? proc.sampleRate : src.sampleRate,
+            channelCount: Int(proc.channelCount > 0 ? proc.channelCount : src.channelCount),
+            bitDepth: isPCM ? Int(asbd.mBitsPerChannel) : 0)
+    }
+
+    /// Friendly format label: prefer the file extension (what the user sees),
+    /// falling back to the codec's four-char format ID.
+    private static func formatName(url: URL, formatID: AudioFormatID) -> String {
+        let ext = url.pathExtension.uppercased()
+        if !ext.isEmpty { return ext }
+        switch formatID {
+        case kAudioFormatLinearPCM:     return "PCM"
+        case kAudioFormatMPEG4AAC:      return "AAC"
+        case kAudioFormatMPEGLayer3:    return "MP3"
+        case kAudioFormatAppleLossless: return "ALAC"
+        case kAudioFormatFLAC:          return "FLAC"
+        default:                        return "Audio"
+        }
     }
 
     // MARK: - Length estimate

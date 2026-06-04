@@ -27,6 +27,9 @@ final class AudioEngine {
     private(set) var fullBuffer: AVAudioPCMBuffer?
     private(set) var selection: Selection = .whole
 
+    /// Description of the originally loaded file (format, rate, channels…).
+    private(set) var fileInfo: AudioFileInfo?
+
     /// Trim bounds: the accessible range of the file. Everything before
     /// `trimStart` and after `trimEnd` is unreachable for playback, seeking,
     /// regions, and bookmarks. Reset to [0, totalFrames] on load.
@@ -121,20 +124,23 @@ final class AudioEngine {
         let box = try await Task.detached(priority: .userInitiated) {
             // SFBAudioLoader already returns float32 non-interleaved stereo at a
             // standard sample rate, so no further normalisation is needed.
-            let buffer = try SFBAudioLoader.decode(url: url)
+            let decoded = try SFBAudioLoader.decode(url: url)
+            let buffer = decoded.buffer
             let stretcher = RubberBandStretcher(sampleRate: buffer.format.sampleRate,
                                                 channels: Int(buffer.format.channelCount))
             stretcher.pitchScale = pitchScale
             stretcher.timeRatio = timeRatio
             stretcher.prime()
-            return UncheckedSendable(value: (buffer, stretcher))
+            return UncheckedSendable(value: (buffer, stretcher, decoded.info))
         }.value
-        install(buffer: box.value.0, stretcher: box.value.1, url: url)
+        install(buffer: box.value.0, stretcher: box.value.1, url: url, info: box.value.2)
     }
 
-    private func install(buffer: AVAudioPCMBuffer, stretcher: RubberBandStretcher, url: URL) {
+    private func install(buffer: AVAudioPCMBuffer, stretcher: RubberBandStretcher,
+                         url: URL, info: AudioFileInfo) {
         sourceURL = url
         fullBuffer = buffer
+        fileInfo = info
         selection = .whole
         trimStart = 0
         trimEnd = AVAudioFramePosition(buffer.frameLength)
@@ -535,6 +541,29 @@ final class AudioEngine {
     var volume: Float {
         get { engine.mainMixerNode.outputVolume }
         set { engine.mainMixerNode.outputVolume = max(0, min(2.0, newValue)) }
+    }
+
+    private var currentPan: Double = 0
+    private var currentMono: Bool = false
+
+    /// Stereo pan / balance. -1 = full left, 0 = center, +1 = full right.
+    /// In stereo mode this is a balance control; in mono mode it pans the
+    /// summed mono signal with an equal-power law.
+    var pan: Float {
+        get { Float(currentPan) }
+        set {
+            currentPan = max(-1, min(1, Double(newValue)))
+            core.setPan(currentPan)
+        }
+    }
+
+    /// When true, L and R are summed to mono (then optionally panned).
+    var isMono: Bool {
+        get { currentMono }
+        set {
+            currentMono = newValue
+            core.setMono(newValue)
+        }
     }
 
     // MARK: - Graph

@@ -11,9 +11,11 @@ final class TransportView: NSView {
     private let bookmarkButton = NSButton()
     private let bookmarksPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
-    private let volumeSlider = NSSlider(value: 100, minValue: 0, maxValue: 200, target: nil, action: nil)
-    private let volumeLabel = NSTextField(labelWithString: "100%")
     private let statusLabel = NSTextField(labelWithString: "No file loaded")
+    private let fileInfoLabel = NSTextField(labelWithString: "")
+
+    /// Soft green used for the filename and the file-info line beneath it.
+    private static let fileColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
 
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
@@ -28,6 +30,7 @@ final class TransportView: NSView {
 
     func refresh() {
         statusLabel.stringValue = audioEngine.sourceURL?.lastPathComponent ?? "No file loaded"
+        fileInfoLabel.stringValue = audioEngine.fileInfo?.summary ?? ""
         loopButton.state = audioEngine.loopMode ? .on : .off
         updateTimeLabel(currentFrame: audioEngine.currentFramePosition)
     }
@@ -58,7 +61,7 @@ final class TransportView: NSView {
         loopButton.action = #selector(toggleLoop(_:))
         loopButton.state = audioEngine.loopMode ? .on : .off
 
-        statusLabel.textColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
+        statusLabel.textColor = Self.fileColor
 
         bookmarkButton.image = NSImage(systemSymbolName: "bookmark", accessibilityDescription: "Add Bookmark")
         bookmarkButton.title = "+"
@@ -84,20 +87,26 @@ final class TransportView: NSView {
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
-        volumeSlider.target = self
-        volumeSlider.action = #selector(volumeChanged(_:))
-        volumeSlider.isContinuous = true
-        volumeSlider.doubleValue = Double(audioEngine.volume) * 100
-        volumeSlider.widthAnchor.constraint(equalToConstant: 120).isActive = true
-        volumeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        volumeLabel.alignment = .right
-        volumeLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        updateVolumeLabel()
-        let volumeIcon = NSTextField(labelWithString: "🔊")
+        // Filename (green) with a smaller file-info line beneath it, pushed to
+        // the trailing edge by a spacer. Both truncate before crowding the row.
+        fileInfoLabel.textColor = Self.fileColor.withAlphaComponent(0.85)
+        fileInfoLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        for label in [statusLabel, fileInfoLabel] {
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        }
+        let fileBlock = NSStackView(views: [statusLabel, fileInfoLabel])
+        fileBlock.orientation = .vertical
+        fileBlock.alignment = .leading
+        fileBlock.spacing = 1
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let stack = NSStackView(views: [
             playButton, stopButton, loopButton, bookmarkButton, bookmarksPopup, timeLabel,
-            volumeIcon, volumeSlider, volumeLabel, statusLabel
+            spacer, fileBlock
         ])
         stack.orientation = .horizontal
         stack.spacing = 12
@@ -107,7 +116,7 @@ final class TransportView: NSView {
 
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -117,15 +126,6 @@ final class TransportView: NSView {
         let current = Double(currentFrame) / rate
         let total = Double(audioEngine.totalFrames) / rate
         timeLabel.stringValue = "\(Self.formatTime(current)) / \(Self.formatTime(total))"
-    }
-
-    private func updateVolumeLabel() {
-        volumeLabel.stringValue = "\(Int(volumeSlider.doubleValue.rounded()))%"
-    }
-
-    @objc private func volumeChanged(_ sender: NSSlider) {
-        audioEngine.volume = Float(sender.doubleValue / 100.0)
-        updateVolumeLabel()
     }
 
     private static func formatTime(_ seconds: Double) -> String {

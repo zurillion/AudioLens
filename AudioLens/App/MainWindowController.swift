@@ -48,7 +48,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         // Below this size the EQ row's height (computed from the residual
         // space after the waveform / transport / pitch-time bands) becomes
         // negative and AppKit logs "Invalid view geometry" warnings.
-        window.contentMinSize = NSSize(width: 900, height: 640)
+        window.contentMinSize = NSSize(width: 900, height: 700)
         window.center()
 
         super.init(window: window)
