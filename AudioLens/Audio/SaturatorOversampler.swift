@@ -20,12 +20,16 @@ final class SaturatorOversampler {
     static let phaseTaps = 32
     static let totalTaps = phaseTaps * osFactor   // 128
 
+    // The two static tables are filled once at first access and only read
+    // thereafter. `nonisolated(unsafe)` tells Swift 6 we vouch for that — the
+    // pointer type isn't Sendable on its own.
+
     /// Shared lowpass FIR. Used directly by the downsampler.
-    private static let lowpass: UnsafeMutablePointer<Float> = makeLowpass()
+    nonisolated(unsafe) private static let lowpass: UnsafeMutablePointer<Float> = makeLowpass()
     /// Polyphase decomposition for the upsampler:
     /// `phasesUp[p * phaseTaps + k] = lowpass[p + osFactor * k]`, pre-multiplied
     /// by `osFactor` to compensate the zero-stuffing average loss.
-    private static let phasesUp: UnsafeMutablePointer<Float> = makePhases()
+    nonisolated(unsafe) private static let phasesUp: UnsafeMutablePointer<Float> = makePhases()
 
     private static func makeLowpass() -> UnsafeMutablePointer<Float> {
         let omegaC = Double.pi / Double(osFactor)
