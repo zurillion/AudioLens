@@ -1,8 +1,8 @@
 import AppKit
 
-/// Output / mixing controls: master volume, stereo pan (balance), and a "Mono"
-/// toggle that sums L+R. Pan stays active in mono mode, where it positions the
-/// summed signal with an equal-power law.
+/// Output / mixing controls: master volume, stereo pan with a Balance/Pan mode
+/// selector, and a "Mono" toggle that sums L+R. Pan stays active in mono mode,
+/// where it positions the summed signal with an equal-power law.
 @MainActor
 final class OutputView: NSView {
 
@@ -12,6 +12,8 @@ final class OutputView: NSView {
     private let volumeLabel = NSTextField(labelWithString: "100%")
     private let panSlider = NSSlider(value: 0, minValue: -1, maxValue: 1, target: nil, action: nil)
     private let panLabel = NSTextField(labelWithString: "C")
+    private let panModeControl = NSSegmentedControl(
+        labels: ["Balance", "Pan"], trackingMode: .selectOne, target: nil, action: nil)
     private let monoCheckbox = NSButton(checkboxWithTitle: "Mono", target: nil, action: nil)
 
     init(audioEngine: AudioEngine) {
@@ -56,21 +58,30 @@ final class OutputView: NSView {
         panLabel.widthAnchor.constraint(equalToConstant: 44).isActive = true
         updatePanLabel()
 
+        panModeControl.target = self
+        panModeControl.action = #selector(panModeChanged(_:))
+        panModeControl.selectedSegment = (audioEngine.panMode == .pan) ? 1 : 0
+        panModeControl.toolTip =
+            "Balance: pan mutes the opposite channel.  Pan: it folds in instead (no content lost)."
+
         monoCheckbox.target = self
         monoCheckbox.action = #selector(monoChanged(_:))
         monoCheckbox.state = audioEngine.isMono ? .on : .off
         monoCheckbox.toolTip = "Sum left and right to a single mono signal"
+        // The Balance/Pan choice only applies to a stereo signal.
+        panModeControl.isEnabled = !audioEngine.isMono
 
-        // A thin spacer separates the volume group from the pan group.
+        // A thin vertical rule separates the volume group from the pan group.
         let separator = NSBox()
         separator.boxType = .separator
         separator.translatesAutoresizingMaskIntoConstraints = false
         separator.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        separator.widthAnchor.constraint(equalToConstant: 1).isActive = true
 
         let stack = NSStackView(views: [
             volumeIcon, volumeSlider, volumeLabel,
             separator,
-            panTitle, lLabel, panSlider, rLabel, panLabel,
+            panTitle, lLabel, panSlider, rLabel, panLabel, panModeControl,
             monoCheckbox,
         ])
         stack.orientation = .horizontal
@@ -100,8 +111,13 @@ final class OutputView: NSView {
         updatePanLabel()
     }
 
+    @objc private func panModeChanged(_ sender: NSSegmentedControl) {
+        audioEngine.panMode = (sender.selectedSegment == 1) ? .pan : .balance
+    }
+
     @objc private func monoChanged(_ sender: NSButton) {
         audioEngine.isMono = (sender.state == .on)
+        panModeControl.isEnabled = (sender.state != .on)
     }
 
     private func updateVolumeLabel() {

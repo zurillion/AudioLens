@@ -1,6 +1,16 @@
 import AVFoundation
 import os
 
+/// How the stereo pan slider behaves when *not* in mono mode.
+enum PanMode: Int, Sendable, CaseIterable {
+    /// Attenuate the channel opposite the pan side. Full left = left channel
+    /// only; the right channel's content is muted. Good for soloing one side.
+    case balance
+    /// Fold the opposite channel into the pan side instead of muting it, so no
+    /// content is lost. Full left = L+R summed on the left.
+    case pan
+}
+
 /// Real-time playback core that drives an `AVAudioSourceNode`. It reads decoded
 /// PCM from a buffer at a movable cursor, runs it through Rubber Band, and
 /// emits the stretched/pitched result. Owning both the read cursor and the
@@ -30,6 +40,7 @@ final class PlaybackCore: @unchecked Sendable {
         var timeRatio: Double = 1.0
         var pan: Double = 0          // -1 = L, 0 = center, +1 = R
         var mono: Bool = false       // sum L+R to mono before panning
+        var panMode: PanMode = .balance
         var regionStart: AVAudioFramePosition = 0
         var regionEnd: AVAudioFramePosition = 0
         var cursor: AVAudioFramePosition = 0
@@ -161,6 +172,7 @@ final class PlaybackCore: @unchecked Sendable {
     func setTimeRatio(_ ratio: Double) { lock.withLockUnchecked { $0.timeRatio = ratio } }
     func setPan(_ pan: Double) { lock.withLockUnchecked { $0.pan = pan } }
     func setMono(_ mono: Bool) { lock.withLockUnchecked { $0.mono = mono } }
+    func setPanMode(_ mode: PanMode) { lock.withLockUnchecked { $0.panMode = mode } }
 
     var playhead: AVAudioFramePosition { lock.withLockUnchecked { $0.playhead } }
     var isFinished: Bool { lock.withLockUnchecked { $0.finished } }
@@ -173,7 +185,7 @@ final class PlaybackCore: @unchecked Sendable {
 
         let snap = lock.withLockUnchecked {
             (c: inout Control) -> (playing: Bool, looping: Bool, pitch: Double, time: Double,
-                                   pan: Double, mono: Bool,
+                                   pan: Double, mono: Bool, panMode: PanMode,
                                    regionStart: AVAudioFramePosition, regionEnd: AVAudioFramePosition,
                                    cursor: AVAudioFramePosition, reset: Bool, generation: UInt64,
                                    seekEpoch: UInt64,
@@ -182,7 +194,7 @@ final class PlaybackCore: @unchecked Sendable {
                                    srcFrames: AVAudioFramePosition) in
             let r = c.resetRequest
             c.resetRequest = false
-            return (c.playing, c.looping, c.pitchScale, c.timeRatio, c.pan, c.mono,
+            return (c.playing, c.looping, c.pitchScale, c.timeRatio, c.pan, c.mono, c.panMode,
                     c.regionStart, c.regionEnd, c.cursor, r, c.generation, c.seekEpoch,
                     c.stretcher, c.src0, c.src1, c.srcFrames)
         }
@@ -322,7 +334,8 @@ final class PlaybackCore: @unchecked Sendable {
         let dst1 = useChannels > 1 ? outPtrs[1] : nil
         let outCount = min(pendingCount, frameCountInt)
         if outCount > 0 {
-            writeServed(dst0: dst0, dst1: dst1, count: outCount, pan: snap.pan, mono: snap.mono)
+            writeServed(dst0: dst0, dst1: dst1, count: outCount,
+                        pan: snap.pan, mono: snap.mono, panMode: snap.panMode)
         }
         if outCount < frameCountInt {
             dst0?.advanced(by: outCount).update(repeating: 0, count: frameCountInt - outCount)
@@ -367,7 +380,7 @@ final class PlaybackCore: @unchecked Sendable {
     /// computed once per render — the per-sample loop is pure arithmetic.
     private func writeServed(dst0: UnsafeMutablePointer<Float>?,
                              dst1: UnsafeMutablePointer<Float>?,
-                             count: Int, pan: Double, mono: Bool) {
+                             count: Int, pan: Double, mono: Bool, panMode: PanMode) {
         let s0 = scratch0, s1 = scratch1
         if let d0 = dst0, let d1 = dst1 {
             if mono {
@@ -381,12 +394,32 @@ final class PlaybackCore: @unchecked Sendable {
                     d1[i] = m * rg
                 }
             } else if pan != 0 {
-                // Stereo balance: attenuate the channel away from the pan side.
-                let lg: Float = pan <= 0 ? 1 : Float(1.0 - pan)
-                let rg: Float = pan >= 0 ? 1 : Float(1.0 + pan)
-                for i in 0..<count {
-                    d0[i] = s0[i] * lg
-                    d1[i] = s1[i] * rg
+                switch panMode {
+                case .balance:
+                    // Attenuate the channel away from the pan side; the opposite
+                    // channel's content is dropped (full left = left only).
+                    let lg: Float = pan <= 0 ? 1 : Float(1.0 - pan)
+                    let rg: Float = pan >= 0 ? 1 : Float(1.0 + pan)
+                    for i in 0..<count {
+                        d0[i] = s0[i] * lg
+                        d1[i] = s1[i] * rg
+                    }
+                case .pan:
+                    // Fold the opposite channel into the pan side, fading its own
+                    // output — no content is lost (full left = L+R on the left).
+                    if pan < 0 {
+                        let t = Float(-pan)
+                        for i in 0..<count {
+                            d0[i] = s0[i] + t * s1[i]
+                            d1[i] = (1 - t) * s1[i]
+                        }
+                    } else {
+                        let t = Float(pan)
+                        for i in 0..<count {
+                            d1[i] = s1[i] + t * s0[i]
+                            d0[i] = (1 - t) * s0[i]
+                        }
+                    }
                 }
             } else {
                 d0.update(from: s0, count: count)

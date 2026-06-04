@@ -545,6 +545,7 @@ final class AudioEngine {
 
     private var currentPan: Double = 0
     private var currentMono: Bool = false
+    private var currentPanMode: PanMode = .balance
 
     /// Stereo pan / balance. -1 = full left, 0 = center, +1 = full right.
     /// In stereo mode this is a balance control; in mono mode it pans the
@@ -563,6 +564,16 @@ final class AudioEngine {
         set {
             currentMono = newValue
             core.setMono(newValue)
+        }
+    }
+
+    /// How the pan slider behaves in stereo: `.balance` (mute the far channel)
+    /// or `.pan` (fold it in). No effect while `isMono` is on.
+    var panMode: PanMode {
+        get { currentPanMode }
+        set {
+            currentPanMode = newValue
+            core.setPanMode(newValue)
         }
     }
 
