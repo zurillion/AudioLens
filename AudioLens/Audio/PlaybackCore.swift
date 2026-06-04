@@ -59,6 +59,10 @@ final class PlaybackCore: @unchecked Sendable {
     private let scratch1: UnsafeMutablePointer<Float>
     private var pendingCount = 0
     private var finalSent = false
+    /// True while the read cursor sits outside the active region (the region was
+    /// dragged across the playhead during play). Used to do a clean stretcher
+    /// restart when the cursor comes back into range.
+    private var wasOutOfRegion = false
 
     // Applied-parameter caches (audio-thread-only) to skip redundant calls.
     private var appliedPitch: Double = .nan
@@ -203,6 +207,7 @@ final class PlaybackCore: @unchecked Sendable {
             appliedTime = .nan
             pendingCount = 0     // discard output that belonged to the old file
             finalSent = false
+            wasOutOfRegion = false
         }
         if snap.reset {
             stretcher.reset()
@@ -216,6 +221,25 @@ final class PlaybackCore: @unchecked Sendable {
         let regEnd = max(regStart, min(snap.srcFrames, snap.regionEnd))
         let useChannels = min(outChannels, maxChannels)
         let frameCountInt = Int(frameCount)
+
+        // The cursor lies strictly outside the region only when the region was
+        // dragged across the playhead (a live trim/loop edit) — a natural end
+        // leaves the cursor *at* regEnd, not past it. Hold position and emit
+        // silence rather than latching "finished", so playback resumes the
+        // moment the region grows back over the cursor.
+        if snap.cursor < regStart || snap.cursor > regEnd {
+            wasOutOfRegion = true
+            pendingCount = 0
+            emitSilence()
+            return noErr
+        }
+        if wasOutOfRegion {
+            // Back in range: restart the stretcher cleanly from the cursor.
+            stretcher.reset()
+            pendingCount = 0
+            finalSent = false
+            wasOutOfRegion = false
+        }
 
         var cursor = max(regStart, min(regEnd, snap.cursor))
         var inputDone = false
