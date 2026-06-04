@@ -117,6 +117,9 @@ final class MainViewController: NSViewController {
             guard let self else { return }
             self.waveformView.bookmarks = self.audioEngine.bookmarks.map { $0.frame }
         }
+
+        transportView.onZoomIn = { [weak self] in self?.waveformView.zoomInCentered() }
+        transportView.onZoomOut = { [weak self] in self?.waveformView.zoomOutCentered() }
     }
 
     override func viewDidAppear() {

@@ -11,8 +11,14 @@ final class TransportView: NSView {
     private let bookmarkButton = NSButton()
     private let bookmarksPopup = NSPopUpButton(frame: .zero, pullsDown: true)
     private let timeLabel = NSTextField(labelWithString: "0:00 / 0:00")
+    private let zoomOutButton = NSButton()
+    private let zoomInButton = NSButton()
     private let statusLabel = NSTextField(labelWithString: "No file loaded")
     private let fileInfoLabel = NSTextField(labelWithString: "")
+
+    /// Wired by MainViewController to drive the waveform's zoom.
+    var onZoomIn: (() -> Void)?
+    var onZoomOut: (() -> Void)?
 
     /// Soft green used for the filename and the file-info line beneath it.
     private static let fileColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
@@ -87,6 +93,20 @@ final class TransportView: NSView {
 
         timeLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
 
+        zoomOutButton.image = NSImage(systemSymbolName: "minus.magnifyingglass",
+                                      accessibilityDescription: "Zoom out")
+        zoomOutButton.bezelStyle = .rounded
+        zoomOutButton.target = self
+        zoomOutButton.action = #selector(zoomOutTapped(_:))
+        zoomOutButton.toolTip = "Zoom out (Cmd+scroll)"
+
+        zoomInButton.image = NSImage(systemSymbolName: "plus.magnifyingglass",
+                                     accessibilityDescription: "Zoom in")
+        zoomInButton.bezelStyle = .rounded
+        zoomInButton.target = self
+        zoomInButton.action = #selector(zoomInTapped(_:))
+        zoomInButton.toolTip = "Zoom in (Cmd+scroll · double-click waveform to reset)"
+
         // Filename (green) with a smaller file-info line beneath it, pushed to
         // the trailing edge by a spacer. Both truncate before crowding the row.
         fileInfoLabel.textColor = Self.fileColor.withAlphaComponent(0.85)
@@ -106,6 +126,7 @@ final class TransportView: NSView {
 
         let stack = NSStackView(views: [
             playButton, stopButton, loopButton, bookmarkButton, bookmarksPopup, timeLabel,
+            zoomOutButton, zoomInButton,
             spacer, fileBlock
         ])
         stack.orientation = .horizontal
@@ -161,6 +182,9 @@ final class TransportView: NSView {
     @objc private func addBookmark(_ sender: NSButton) {
         audioEngine.addBookmarkAtPlayhead()
     }
+
+    @objc private func zoomInTapped(_ sender: NSButton) { onZoomIn?() }
+    @objc private func zoomOutTapped(_ sender: NSButton) { onZoomOut?() }
 }
 
 extension TransportView: NSMenuDelegate {

@@ -46,6 +46,33 @@ final class WaveformView: NSView {
     private var validBuckets = 0
     private var totalFrames: AVAudioFramePosition = 0
 
+    /// Strong reference to the decoded PCM, kept so we can read individual
+    /// samples for direct-sample drawing once zoom outruns the bucket overview.
+    private var pcmBuffer: AVAudioPCMBuffer?
+
+    // MARK: - Zoom window
+    //
+    // Everything pixel/frame conversion goes through `frameToPixel` and
+    // `pixelToFrame`, so changing what these two functions consider the
+    // "visible range" is what makes the entire view zoom — overlays, hit
+    // tests, drag, playhead all follow automatically.
+
+    /// Inclusive start of the visible frame range.
+    private var visibleStart: AVAudioFramePosition = 0
+    /// Exclusive end of the visible frame range. `visibleStart..<visibleEnd`
+    /// is what occupies `0..<bounds.width` in pixel space. At `1×` zoom this
+    /// is `0..<totalFrames`.
+    private var visibleEnd: AVAudioFramePosition = 0
+
+    /// During playback, scroll forward (DAW-style) when the playhead nears the
+    /// right edge of the visible window. Turned off by any user pan/zoom; the
+    /// "fit-to-view" gesture (double-click body) turns it back on.
+    private var autoFollowPlayhead = true
+
+    /// Accumulator for incremental pinch deltas (the recognizer reports a
+    /// running total during the gesture).
+    private var pinchAccumulator: CGFloat = 0
+
     private var loadTask: Task<Void, Never>?
     private var overviewGeneration = 0
 
@@ -77,7 +104,8 @@ final class WaveformView: NSView {
     var playheadFrame: AVAudioFramePosition = 0 {
         didSet {
             guard oldValue != playheadFrame else { return }
-            positionPlayhead()   // move the layer; no full redraw
+            positionPlayhead()        // move the layer; no full redraw
+            maybePageForPlayhead()    // DAW-style auto-scroll while playing
         }
     }
 
@@ -124,6 +152,12 @@ final class WaveformView: NSView {
         ]
         playheadLayer.isHidden = true
         layer?.addSublayer(playheadLayer)
+
+        // Trackpad pinch zoom. The recognizer reports a running magnification
+        // value during the gesture, which we read incrementally and reset.
+        let pinch = NSMagnificationGestureRecognizer(
+            target: self, action: #selector(handlePinch(_:)))
+        addGestureRecognizer(pinch)
     }
 
     required init?(coder: NSCoder) {
@@ -154,6 +188,10 @@ final class WaveformView: NSView {
         bucketCount = 0
         validBuckets = 0
         totalFrames = 0
+        visibleStart = 0
+        visibleEnd = 0
+        autoFollowPlayhead = true
+        pcmBuffer = nil
         trimStartFrame = 0
         trimEndFrame = 0
         playheadFrame = 0
@@ -180,6 +218,11 @@ final class WaveformView: NSView {
 
         isLoading = true
         totalFrames = AVAudioFramePosition(buffer.frameLength)
+        // Reset zoom to 1× (whole-file view) for each new load.
+        visibleStart = 0
+        visibleEnd = totalFrames
+        autoFollowPlayhead = true
+        pcmBuffer = buffer
         trimStartFrame = 0
         trimEndFrame = totalFrames
         mins = []
@@ -335,7 +378,7 @@ final class WaveformView: NSView {
         }
     }
 
-    override func mouseUp(with event: NSEvent) {
+    private func mouseUpDefault(_ event: NSEvent) {
         let mode = dragMode
         defer {
             dragMode = .none
@@ -374,6 +417,173 @@ final class WaveformView: NSView {
             }
         }
         return best
+    }
+
+    // MARK: - Zoom
+
+    /// Current zoom factor relative to 1× (whole file). 1× = entire file in view.
+    var zoomFactor: Double {
+        guard totalFrames > 0, visibleLength > 0 else { return 1 }
+        return Double(totalFrames) / Double(visibleLength)
+    }
+
+    /// Zoom by `factor` (>1 = zoom in, <1 = zoom out), pinning the frame
+    /// currently under `anchorPx` so it stays under that same pixel after the
+    /// zoom. Clamps at 1× (whole file) and at 1 frame per pixel.
+    func zoom(by factor: Double, anchoredAtPixel anchorPx: CGFloat) {
+        guard totalFrames > 0, bounds.width > 0 else { return }
+        let anchorFrame = pixelToFrame(anchorPx)
+
+        let minLen = max(AVAudioFramePosition(bounds.width), 1)   // 1 frame/pixel
+        let maxLen = totalFrames                                  // 1× zoom
+        let proposed = Double(visibleEnd - visibleStart) / factor
+        var newLen = AVAudioFramePosition(proposed.rounded())
+        newLen = max(minLen, min(maxLen, newLen))
+
+        // Solve: anchorPx / width = (anchorFrame - newStart) / newLen.
+        let anchorRatio = Double(anchorPx / bounds.width)
+        var newStart = AVAudioFramePosition(
+            Double(anchorFrame) - anchorRatio * Double(newLen))
+        var newEnd = newStart + newLen
+
+        // Clamp window inside [0, totalFrames] without changing its length.
+        if newStart < 0 {
+            newEnd -= newStart
+            newStart = 0
+        }
+        if newEnd > totalFrames {
+            newStart -= (newEnd - totalFrames)
+            newEnd = totalFrames
+        }
+        newStart = max(0, newStart)
+        newEnd = min(totalFrames, newEnd)
+
+        visibleStart = newStart
+        visibleEnd = newEnd
+        autoFollowPlayhead = false
+        positionPlayhead()
+        needsDisplay = true
+    }
+
+    /// Centered zoom-in, used by the toolbar buttons.
+    func zoomInCentered() { zoom(by: 1.5, anchoredAtPixel: bounds.width / 2) }
+    /// Centered zoom-out, used by the toolbar buttons.
+    func zoomOutCentered() { zoom(by: 1.0 / 1.5, anchoredAtPixel: bounds.width / 2) }
+
+    /// Reset to 1× zoom and re-enable auto-follow.
+    func resetZoom() {
+        visibleStart = 0
+        visibleEnd = totalFrames
+        autoFollowPlayhead = true
+        positionPlayhead()
+        needsDisplay = true
+    }
+
+    /// Shift the visible window by `dxPixels` (positive = scroll forward).
+    private func panByPixels(_ dxPixels: CGFloat) {
+        guard totalFrames > 0, bounds.width > 0 else { return }
+        let len = visibleEnd - visibleStart
+        guard len < totalFrames else { return }   // nothing to scroll
+        let shift = AVAudioFramePosition(
+            (Double(dxPixels) / Double(bounds.width) * Double(len)).rounded())
+        if shift == 0 { return }
+        var newStart = visibleStart - shift   // natural scrolling: content follows fingers
+        newStart = max(0, min(totalFrames - len, newStart))
+        if newStart == visibleStart { return }
+        visibleStart = newStart
+        visibleEnd = visibleStart + len
+        autoFollowPlayhead = false
+        positionPlayhead()
+        needsDisplay = true
+    }
+
+    @objc private func handlePinch(_ recognizer: NSMagnificationGestureRecognizer) {
+        // The recognizer reports running total magnification; read the delta
+        // we haven't acted on yet, then "consume" it by updating the
+        // accumulator. (Setting `magnification = 0` on AppKit was unreliable
+        // in older OS versions; tracking our own accumulator is safe.)
+        let total = recognizer.magnification
+        let delta = total - pinchAccumulator
+        pinchAccumulator = total
+        if recognizer.state == .ended || recognizer.state == .cancelled {
+            pinchAccumulator = 0
+        }
+        let factor = 1.0 + Double(delta)
+        guard factor > 0 else { return }
+        let p = recognizer.location(in: self)
+        zoom(by: factor, anchoredAtPixel: p.x)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard totalFrames > 0 else { return }
+        let here = convert(event.locationInWindow, from: nil)
+
+        if event.modifierFlags.contains(.command) {
+            // Cmd+scroll: zoom around the cursor. Use deltaY (mouse wheels
+            // typically only have a vertical axis).
+            let dy = Double(event.scrollingDeltaY)
+            if dy == 0 { return }
+            let factor = exp(dy * 0.01)
+            zoom(by: factor, anchoredAtPixel: here.x)
+            return
+        }
+
+        // Plain scroll: horizontal pan. Trackpads supply deltaX directly;
+        // mouse wheels deliver only deltaY, which we map to horizontal too so
+        // users without a horizontal axis can still navigate.
+        let dx: CGFloat
+        if event.scrollingDeltaX != 0 {
+            dx = event.scrollingDeltaX
+        } else if event.scrollingDeltaY != 0 {
+            dx = event.scrollingDeltaY
+        } else {
+            return
+        }
+        panByPixels(dx)
+    }
+
+    /// Double-click in the body resets zoom to 1× and re-arms auto-follow —
+    /// the "fit to view" gesture.
+    override func mouseUp(with event: NSEvent) {
+        if event.clickCount >= 2, dragMode == .waveform {
+            // Cancel the pending click-seek and reset zoom instead.
+            dragMode = .none
+            dragStartPixel = nil
+            dragCurrentPixel = nil
+            resetZoom()
+            return
+        }
+        mouseUpDefault(event)
+    }
+
+    // MARK: - Auto-follow
+
+    /// Called from the playhead update path. If auto-follow is on and the
+    /// playhead reaches the right edge of the visible window, page forward so
+    /// it lands near the left side (DAW-style scrolling).
+    private func maybePageForPlayhead() {
+        guard autoFollowPlayhead,
+              totalFrames > 0,
+              visibleLength < totalFrames else { return }
+        let viewPos = Double(playheadFrame - visibleStart) / Double(visibleLength)
+        if viewPos > 0.85 {
+            // Place the playhead at 15% of the new window.
+            let newStart = playheadFrame
+                - AVAudioFramePosition(Double(visibleLength) * 0.15)
+            let clamped = max(0, min(totalFrames - visibleLength, newStart))
+            if clamped != visibleStart {
+                visibleStart = clamped
+                visibleEnd = visibleStart + visibleLength
+                needsDisplay = true
+            }
+        } else if viewPos < 0 {
+            // Playhead jumped backward off-screen (e.g. seek): recenter.
+            let newStart = max(0, playheadFrame
+                - AVAudioFramePosition(Double(visibleLength) * 0.15))
+            visibleStart = min(totalFrames - visibleLength, newStart)
+            visibleEnd = visibleStart + visibleLength
+            needsDisplay = true
+        }
     }
 
     // MARK: - Drawing
@@ -436,13 +646,12 @@ final class WaveformView: NSView {
         CATransaction.commit()
     }
 
-    /// One vertical min/max line per pixel column, downsampling the overview to
-    /// the view width. Only computed buckets (`validBuckets`) are drawn, so the
-    /// waveform fills in progressively.
+    /// One vertical min/max line per pixel column, downsampling whatever data
+    /// covers the visible window. Below ~1 bucket per pixel the overview runs
+    /// out of resolution, so we switch to reading individual samples from the
+    /// PCM buffer (which is already in RAM — free at any zoom).
     private func drawWaveform(_ ctx: CGContext) {
-        guard bucketCount > 0, validBuckets > 0 else { return }
-        let mid = waveMid
-        let halfHeight = waveHalfHeight
+        guard totalFrames > 0 else { return }
         let width = bounds.width
         guard width >= 1 else { return }
 
@@ -450,14 +659,37 @@ final class WaveformView: NSView {
         ctx.setLineWidth(1)
 
         let columns = Int(width)
+        let visibleFrames = visibleEnd - visibleStart
+        // Map the visible window onto the bucket array.
+        let firstBucket = Int(Double(visibleStart) * Double(bucketCount) / Double(totalFrames))
+        let lastBucket = Int((Double(visibleEnd) * Double(bucketCount) / Double(totalFrames)).rounded(.up))
+        let visibleBuckets = max(0, lastBucket - firstBucket)
+        let bucketsPerColumn = Double(visibleBuckets) / Double(max(1, columns))
+
+        // If we don't even have one overview bucket per pixel, the overview is
+        // visually too coarse: switch to reading the PCM buffer directly.
+        if bucketsPerColumn < 1.0, pcmBuffer != nil {
+            drawDirectSamples(ctx, columns: columns,
+                              visibleFrames: visibleFrames,
+                              width: width)
+            return
+        }
+
+        guard bucketCount > 0, validBuckets > 0, visibleBuckets > 0 else { return }
+        let mid = waveMid
+        let halfHeight = waveHalfHeight
+
         for px in 0..<columns {
-            let b0 = bucketCount * px / columns
-            let b1 = max(b0 + 1, bucketCount * (px + 1) / columns)
-            if b0 >= validBuckets { break }
-            let end = min(b1, validBuckets)
+            let b0 = firstBucket + visibleBuckets * px / columns
+            let b1 = max(b0 + 1, firstBucket + visibleBuckets * (px + 1) / columns)
+            // Clamp to what's actually computed (the overview fills in
+            // progressively in the background).
+            let cb0 = max(0, min(validBuckets - 1, b0))
+            let cb1 = max(cb0 + 1, min(validBuckets, b1))
+            if cb0 >= validBuckets { break }
             var lo: Float = 0
             var hi: Float = 0
-            for b in b0..<end {
+            for b in cb0..<cb1 {
                 if mins[b] < lo { lo = mins[b] }
                 if maxs[b] > hi { hi = maxs[b] }
             }
@@ -468,38 +700,82 @@ final class WaveformView: NSView {
         ctx.strokePath()
     }
 
+    /// At high zoom (overview too coarse) we read straight from the PCM
+    /// buffer — peaks per pixel column over the visible frames. The buffer is
+    /// already resident in RAM so this is just float reads, no I/O.
+    private func drawDirectSamples(_ ctx: CGContext, columns: Int,
+                                   visibleFrames: AVAudioFramePosition,
+                                   width: CGFloat) {
+        guard let buffer = pcmBuffer,
+              let channelData = buffer.floatChannelData,
+              visibleFrames > 0, columns > 0 else { return }
+        let channels = Int(buffer.format.channelCount)
+        let frameLength = Int(buffer.frameLength)
+        let mid = waveMid
+        let halfHeight = waveHalfHeight
+        let framesPerColumn = Double(visibleFrames) / Double(columns)
+
+        for px in 0..<columns {
+            let f0 = visibleStart + AVAudioFramePosition(Double(px) * framesPerColumn)
+            let f1 = visibleStart + AVAudioFramePosition(Double(px + 1) * framesPerColumn)
+            let cf0 = max(0, min(frameLength - 1, Int(f0)))
+            let cf1 = max(cf0 + 1, min(frameLength, Int(f1)))
+            var lo: Float = 0
+            var hi: Float = 0
+            for ch in 0..<channels {
+                let ptr = channelData[ch]
+                var i = cf0
+                while i < cf1 {
+                    let v = ptr[i]
+                    if v < lo { lo = v }
+                    if v > hi { hi = v }
+                    i += 1
+                }
+            }
+            let x = CGFloat(px) + 0.5
+            ctx.move(to: CGPoint(x: x, y: mid - CGFloat(hi) * halfHeight))
+            ctx.addLine(to: CGPoint(x: x, y: mid - CGFloat(lo) * halfHeight))
+        }
+        ctx.strokePath()
+    }
+
     /// Grey out the inaccessible head/tail outside the trim markers and draw the
     /// two always-present trim boundary lines plus their top-strip grab handles.
+    ///
+    /// With zoom, the trim x positions can land outside the view. We still
+    /// draw the grey overlay for whatever portion is visible, but skip the
+    /// boundary line + handle when off-screen.
     private func drawTrim(_ ctx: CGContext) {
         guard totalFrames > 0 else { return }
         let startX = frameToPixel(trimStartFrame)
         let endX = frameToPixel(trimEndFrame)
         let top = waveTop
         let height = waveBottom - waveTop
+        let viewWidth = bounds.width
 
-        // Wash the trimmed regions toward the background so the waveform there
-        // reads as inaccessible. Background-tinted so it works in light & dark.
+        // Wash inaccessible regions; clip the rect to the view.
         let overlay = NSColor.textBackgroundColor.withAlphaComponent(0.72)
         ctx.setFillColor(overlay.cgColor)
         if startX > 0 {
-            ctx.fill(NSRect(x: 0, y: top, width: startX, height: height))
+            let w = min(startX, viewWidth)
+            ctx.fill(NSRect(x: 0, y: top, width: w, height: height))
         }
-        if endX < bounds.width {
-            ctx.fill(NSRect(x: endX, y: top, width: bounds.width - endX, height: height))
+        if endX < viewWidth {
+            let x = max(0, endX)
+            ctx.fill(NSRect(x: x, y: top, width: viewWidth - x, height: height))
         }
 
-        // Boundary lines spanning the waveform band.
+        // Boundary lines + grab handles — only when the marker itself is in view.
         ctx.setStrokeColor(Self.trimColor.cgColor)
         ctx.setLineWidth(1.5)
-        for x in [startX, endX] {
+        for x in [startX, endX] where x >= 0 && x <= viewWidth {
             ctx.move(to: CGPoint(x: x, y: waveTop))
             ctx.addLine(to: CGPoint(x: x, y: waveBottom))
         }
         ctx.strokePath()
 
-        // Grab handles in the top strip, slightly slimmer than the loop ones.
         ctx.setFillColor(Self.trimColor.cgColor)
-        for x in [startX, endX] {
+        for x in [startX, endX] where x >= 0 && x <= viewWidth {
             let handle = NSRect(x: x - 4, y: 3, width: 8, height: Self.topStrip - 7)
             let path = NSBezierPath(roundedRect: handle, xRadius: 2, yRadius: 2)
             path.fill()
@@ -568,17 +844,22 @@ final class WaveformView: NSView {
 
     // MARK: - Coordinate mapping
 
+    /// Pixel `x` (clamped to bounds) → frame inside the visible window.
     private func pixelToFrame(_ x: CGFloat) -> AVAudioFramePosition {
-        guard bounds.width > 0 else { return 0 }
+        guard bounds.width > 0, visibleEnd > visibleStart else { return visibleStart }
         let ratio = max(0, min(1, Double(x / bounds.width)))
-        return AVAudioFramePosition(Double(totalFrames) * ratio)
+        return visibleStart + AVAudioFramePosition(Double(visibleEnd - visibleStart) * ratio)
     }
 
+    /// Frame → pixel x. Off-window frames produce off-bounds x values, which
+    /// drawing naturally clips and hit tests naturally miss.
     private func frameToPixel(_ frame: AVAudioFramePosition) -> CGFloat {
-        guard totalFrames > 0 else { return 0 }
-        let clamped = max(0, min(totalFrames, frame))
-        return bounds.width * CGFloat(Double(clamped) / Double(totalFrames))
+        guard visibleEnd > visibleStart else { return 0 }
+        return bounds.width
+            * CGFloat(Double(frame - visibleStart) / Double(visibleEnd - visibleStart))
     }
+
+    private var visibleLength: AVAudioFramePosition { max(1, visibleEnd - visibleStart) }
 
     // MARK: - Overview computation (off-main)
 
