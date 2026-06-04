@@ -595,23 +595,27 @@ final class WaveformView: NSView {
         guard autoFollowPlayhead,
               totalFrames > 0,
               visibleLength < totalFrames else { return }
-        let viewPos = Double(playheadFrame - visibleStart) / Double(visibleLength)
+        // Capture the current length BEFORE mutating visibleStart — the
+        // `visibleLength` getter is `visibleEnd - visibleStart`, so reading it
+        // after the start moves yields a *shrunken* length, which would in
+        // turn shrink the window on every page (compounding zoom — the bug
+        // we hit before).
+        let len = visibleEnd - visibleStart
+        let viewPos = Double(playheadFrame - visibleStart) / Double(len)
         if viewPos > 0.85 {
             // Place the playhead at 15% of the new window.
-            let newStart = playheadFrame
-                - AVAudioFramePosition(Double(visibleLength) * 0.15)
-            let clamped = max(0, min(totalFrames - visibleLength, newStart))
+            let newStart = playheadFrame - AVAudioFramePosition(Double(len) * 0.15)
+            let clamped = max(0, min(totalFrames - len, newStart))
             if clamped != visibleStart {
                 visibleStart = clamped
-                visibleEnd = visibleStart + visibleLength
+                visibleEnd = visibleStart + len
                 needsDisplay = true
             }
         } else if viewPos < 0 {
             // Playhead jumped backward off-screen (e.g. seek): recenter.
-            let newStart = max(0, playheadFrame
-                - AVAudioFramePosition(Double(visibleLength) * 0.15))
-            visibleStart = min(totalFrames - visibleLength, newStart)
-            visibleEnd = visibleStart + visibleLength
+            let newStart = max(0, playheadFrame - AVAudioFramePosition(Double(len) * 0.15))
+            visibleStart = min(totalFrames - len, newStart)
+            visibleEnd = visibleStart + len
             needsDisplay = true
         }
     }
