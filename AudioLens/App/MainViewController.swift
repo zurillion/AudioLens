@@ -5,11 +5,13 @@ final class MainViewController: NSViewController {
 
     private let audioEngine: AudioEngine
     private let waveformView: WaveformView
+    private let vuMeterView: VUMeterView
     private let transportView: TransportView
     private let outputView: OutputView
     private let eqView: EQView
     private let pitchTimeView: PitchTimeView
     private var playheadTimer: Timer?
+    private var lastTickTime: TimeInterval = 0
 
     /// Set by the window controller; invoked when a file is dropped on the
     /// window.
@@ -18,6 +20,7 @@ final class MainViewController: NSViewController {
     init(audioEngine: AudioEngine) {
         self.audioEngine = audioEngine
         self.waveformView = WaveformView()
+        self.vuMeterView = VUMeterView()
         self.transportView = TransportView(audioEngine: audioEngine)
         self.outputView = OutputView(audioEngine: audioEngine)
         self.eqView = EQView(audioEngine: audioEngine)
@@ -36,12 +39,13 @@ final class MainViewController: NSViewController {
         root.onDrop = { [weak self] url in self?.onOpenFile?(url) }
 
         let waveContainer = waveformView
+        let vuMeter = vuMeterView
         let transport = transportView
         let output = outputView
         let pitchTime = pitchTimeView
         let eq = eqView
 
-        for v in [waveContainer, transport, output, pitchTime, eq] {
+        for v in [waveContainer, vuMeter, transport, output, pitchTime, eq] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -52,7 +56,12 @@ final class MainViewController: NSViewController {
             waveContainer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             waveContainer.heightAnchor.constraint(equalToConstant: 260),
 
-            transport.topAnchor.constraint(equalTo: waveContainer.bottomAnchor, constant: 12),
+            vuMeter.topAnchor.constraint(equalTo: waveContainer.bottomAnchor, constant: 8),
+            vuMeter.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            vuMeter.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            vuMeter.heightAnchor.constraint(equalToConstant: 28),
+
+            transport.topAnchor.constraint(equalTo: vuMeter.bottomAnchor, constant: 8),
             transport.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             transport.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             transport.heightAnchor.constraint(equalToConstant: 48),
@@ -140,12 +149,22 @@ final class MainViewController: NSViewController {
         let frame = audioEngine.currentFramePosition
         waveformView.playheadFrame = frame
         transportView.updatePlayheadDisplay(currentFrame: frame)
+
+        // VU meter: pull the peaks the audio tap has accumulated since the
+        // previous tick, scaled by the real elapsed time so ballistic decay is
+        // tick-rate independent.
+        let now = CFAbsoluteTimeGetCurrent()
+        let dt: TimeInterval = lastTickTime > 0 ? max(0.001, now - lastTickTime) : 1.0 / 24.0
+        lastTickTime = now
+        let peaks = audioEngine.consumePeaks()
+        vuMeterView.update(leftPeak: peaks.left, rightPeak: peaks.right, deltaTime: dt)
     }
 
     /// Called the moment a load begins (before decode) so the preview shows
     /// "Loading…" and the previous waveform is cleared right away.
     func willBeginLoading() {
         waveformView.beginLoading()
+        vuMeterView.reset()
     }
 
     /// Called if the load fails, to clear the "Loading…" indicator.
@@ -160,5 +179,6 @@ final class MainViewController: NSViewController {
             waveformView.trimEndFrame = audioEngine.trimEnd
         }
         transportView.refresh()
+        vuMeterView.reset()
     }
 }

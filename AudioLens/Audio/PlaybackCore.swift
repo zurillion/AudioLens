@@ -74,6 +74,10 @@ final class PlaybackCore: @unchecked Sendable {
     private let scratch1: UnsafeMutablePointer<Float>
     private var pendingCount = 0
     private var finalSent = false
+
+    // Per-channel saturation oversamplers (audio-thread-only).
+    private let leftSat = SaturatorOversampler()
+    private let rightSat = SaturatorOversampler()
     /// True while the read cursor sits outside the active region (the region was
     /// dragged across the playhead during play). Used to do a clean stretcher
     /// restart when the cursor comes back into range.
@@ -232,6 +236,8 @@ final class PlaybackCore: @unchecked Sendable {
             pendingCount = 0     // discard output that belonged to the old file
             finalSent = false
             wasOutOfRegion = false
+            leftSat.reset()
+            rightSat.reset()
         }
         if snap.reset {
             stretcher.reset()
@@ -443,13 +449,18 @@ final class PlaybackCore: @unchecked Sendable {
             }
         }
 
-        // Soft-clip: tanh bends peaks toward ±1 without ever crossing it, adding
-        // gentle harmonic "warmth/loudness". A peak limiter downstream still
-        // guarantees the absolute ceiling after the EQ.
+        // Soft-clip: tanh bends peaks toward ±1 without ever crossing it,
+        // adding gentle harmonic "warmth/loudness". Run through a 4× polyphase
+        // oversampler so the harmonics don't fold back as aliasing at high
+        // drive. The downstream peak limiter still guarantees the ceiling.
         if saturate {
             let d = Float(drive)
-            if let d0 = dst0 { for i in 0..<count { d0[i] = tanhf(d * d0[i]) } }
-            if let d1 = dst1 { for i in 0..<count { d1[i] = tanhf(d * d1[i]) } }
+            if let d0 = dst0 {
+                for i in 0..<count { d0[i] = leftSat.processSample(d0[i], drive: d) }
+            }
+            if let d1 = dst1 {
+                for i in 0..<count { d1[i] = rightSat.processSample(d1[i], drive: d) }
+            }
         }
     }
 }

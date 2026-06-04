@@ -1,6 +1,8 @@
 import AVFoundation
 import AudioToolbox
+import Accelerate
 import Foundation
+import os
 
 /// Final clip-safe output stage behavior.
 enum OutputStageMode: Sendable {
@@ -649,6 +651,52 @@ final class AudioEngine {
         core.setSaturation(saturate, drive: currentDrive)
     }
 
+    // MARK: - Output level metering
+
+    private struct PeakState {
+        var left: Float = 0
+        var right: Float = 0
+    }
+    /// Peak observations from the limiter-output tap. The audio thread writes
+    /// (max-merge), the main thread reads-and-clears every UI tick.
+    private let peakLock = OSAllocatedUnfairLock(uncheckedState: PeakState())
+
+    /// Read the maximum absolute peak per channel observed since the previous
+    /// call, then reset the accumulator. Returns linear amplitude (≥ 0).
+    func consumePeaks() -> (left: Float, right: Float) {
+        peakLock.withLockUnchecked { s in
+            let r = (s.left, s.right)
+            s.left = 0
+            s.right = 0
+            return r
+        }
+    }
+
+    /// Install (or replace) the level-monitoring tap on the limiter's output —
+    /// after EQ, mixer (volume), pan, and the limiter itself, so the meter
+    /// shows what's actually going to the speakers.
+    private func installLevelTap(format: AVAudioFormat) {
+        limiter.removeTap(onBus: 0)
+        let lockRef = peakLock
+        limiter.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
+            guard let channels = buffer.floatChannelData else { return }
+            let frames = vDSP_Length(buffer.frameLength)
+            guard frames > 0 else { return }
+            var peakL: Float = 0
+            var peakR: Float = 0
+            vDSP_maxmgv(channels[0], 1, &peakL, frames)
+            if buffer.format.channelCount > 1 {
+                vDSP_maxmgv(channels[1], 1, &peakR, frames)
+            } else {
+                peakR = peakL
+            }
+            lockRef.withLockUnchecked { s in
+                if peakL > s.left { s.left = peakL }
+                if peakR > s.right { s.right = peakR }
+            }
+        }
+    }
+
     // MARK: - Graph
 
     /// (Re)build the source → EQ → mixer chain for a given processing format.
@@ -681,5 +729,6 @@ final class AudioEngine {
         engine.connect(mixer, to: limiter, format: format)
         engine.connect(limiter, to: engine.outputNode, format: format)
         sourceNode = node
+        installLevelTap(format: format)
     }
 }

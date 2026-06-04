@@ -37,7 +37,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         rootViewController = MainViewController(audioEngine: audioEngine)
 
         let window = AudioLensWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 800),
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 836),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -46,9 +46,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         window.titlebarAppearsTransparent = false
         window.contentViewController = rootViewController
         // Below this size the EQ row's height (computed from the residual
-        // space after the waveform / transport / output / pitch-time bands)
-        // becomes negative and AppKit logs "Invalid view geometry" warnings.
-        window.contentMinSize = NSSize(width: 900, height: 740)
+        // space after the waveform / VU meter / transport / output /
+        // pitch-time bands) becomes negative and AppKit logs "Invalid view
+        // geometry" warnings.
+        window.contentMinSize = NSSize(width: 900, height: 776)
         window.center()
 
         super.init(window: window)
