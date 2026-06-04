@@ -11,6 +11,7 @@ struct AppTheme: Sendable {
     let waveformRGB: ColorRGB
     let filenameRGB: ColorRGB
     let followOnRGB: ColorRGB
+    let windowBgRGB: ColorRGB
 }
 
 /// RGB-as-Sendable so the AppTheme catalog can be a plain `static let` without
@@ -34,42 +35,50 @@ extension AppTheme {
         AppTheme(id: "default", displayName: "Default",
                  waveformRGB: ColorRGB(0.00, 0.48, 1.00),   // system blue-ish
                  filenameRGB: ColorRGB(0.45, 0.82, 0.50),   // soft green
-                 followOnRGB: ColorRGB(0.00, 0.48, 1.00)),
+                 followOnRGB: ColorRGB(0.00, 0.48, 1.00),
+                 windowBgRGB: ColorRGB(0.15, 0.15, 0.17)),  // neutral dark
 
         AppTheme(id: "aurora", displayName: "Aurora",
                  waveformRGB: ColorRGB(0.30, 0.85, 0.85),   // teal-cyan
                  filenameRGB: ColorRGB(0.55, 0.95, 0.85),
-                 followOnRGB: ColorRGB(0.25, 0.75, 0.80)),
+                 followOnRGB: ColorRGB(0.25, 0.75, 0.80),
+                 windowBgRGB: ColorRGB(0.08, 0.16, 0.18)),  // teal-tinted dark
 
         AppTheme(id: "sunset", displayName: "Sunset",
                  waveformRGB: ColorRGB(0.98, 0.55, 0.25),   // warm orange
                  filenameRGB: ColorRGB(1.00, 0.78, 0.55),
-                 followOnRGB: ColorRGB(0.95, 0.45, 0.20)),
+                 followOnRGB: ColorRGB(0.95, 0.45, 0.20),
+                 windowBgRGB: ColorRGB(0.20, 0.12, 0.09)),  // warm umber
 
         AppTheme(id: "forest", displayName: "Forest",
                  waveformRGB: ColorRGB(0.30, 0.75, 0.40),   // leaf green
                  filenameRGB: ColorRGB(0.60, 0.95, 0.55),
-                 followOnRGB: ColorRGB(0.25, 0.65, 0.30)),
+                 followOnRGB: ColorRGB(0.25, 0.65, 0.30),
+                 windowBgRGB: ColorRGB(0.09, 0.16, 0.11)),  // forest floor
 
         AppTheme(id: "lavender", displayName: "Lavender",
                  waveformRGB: ColorRGB(0.70, 0.55, 0.90),   // soft violet
                  filenameRGB: ColorRGB(0.85, 0.75, 1.00),
-                 followOnRGB: ColorRGB(0.60, 0.45, 0.85)),
+                 followOnRGB: ColorRGB(0.60, 0.45, 0.85),
+                 windowBgRGB: ColorRGB(0.15, 0.12, 0.20)),  // violet ink
 
         AppTheme(id: "ocean", displayName: "Ocean",
                  waveformRGB: ColorRGB(0.20, 0.50, 0.90),   // deep blue
                  filenameRGB: ColorRGB(0.50, 0.75, 1.00),
-                 followOnRGB: ColorRGB(0.15, 0.40, 0.85)),
+                 followOnRGB: ColorRGB(0.15, 0.40, 0.85),
+                 windowBgRGB: ColorRGB(0.07, 0.11, 0.20)),  // deep ocean
 
         AppTheme(id: "crimson", displayName: "Crimson",
                  waveformRGB: ColorRGB(0.90, 0.30, 0.40),   // bold red
                  filenameRGB: ColorRGB(1.00, 0.55, 0.60),
-                 followOnRGB: ColorRGB(0.85, 0.25, 0.35)),
+                 followOnRGB: ColorRGB(0.85, 0.25, 0.35),
+                 windowBgRGB: ColorRGB(0.18, 0.09, 0.11)),  // dark wine
 
         AppTheme(id: "mono", displayName: "Mono",
                  waveformRGB: ColorRGB(0.78, 0.78, 0.78),   // neutral
                  filenameRGB: ColorRGB(0.92, 0.92, 0.92),
-                 followOnRGB: ColorRGB(0.55, 0.55, 0.55)),
+                 followOnRGB: ColorRGB(0.55, 0.55, 0.55),
+                 windowBgRGB: ColorRGB(0.13, 0.13, 0.13)),  // pure dark grey
     ]
 }
 
@@ -99,6 +108,7 @@ final class ThemeManager {
     var waveformColor: NSColor { current.waveformRGB.nsColor }
     var filenameColor: NSColor { current.filenameRGB.nsColor }
     var followOnColor: NSColor { current.followOnRGB.nsColor }
+    var windowBackgroundColor: NSColor { current.windowBgRGB.nsColor }
 }
 
 extension Notification.Name {

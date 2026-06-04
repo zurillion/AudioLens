@@ -12,6 +12,11 @@ final class MainViewController: NSViewController {
     private let pitchTimeView: PitchTimeView
     private var playheadTimer: Timer?
     private var lastTickTime: TimeInterval = 0
+    /// Root view kept around so the theme observer can retint its layer.
+    /// `nonisolated(unsafe)` so the nonisolated `deinit` can read the
+    /// observer token below.
+    private weak var rootView: NSView?
+    private nonisolated(unsafe) var themeObserver: (any NSObjectProtocol)?
 
     /// Set by the window controller; invoked when a file is dropped on the
     /// window.
@@ -32,11 +37,25 @@ final class MainViewController: NSViewController {
         fatalError("init(coder:) is not supported")
     }
 
+    deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+    }
+
     override func loadView() {
         let root = FileDropView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720))
         root.wantsLayer = true
-        root.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        root.layer?.backgroundColor = ThemeManager.shared.windowBackgroundColor.cgColor
         root.onDrop = { [weak self] url in self?.onOpenFile?(url) }
+        rootView = root
+
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: .themeChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.rootView?.layer?.backgroundColor =
+                    ThemeManager.shared.windowBackgroundColor.cgColor
+            }
+        }
 
         let waveContainer = waveformView
         let vuMeter = vuMeterView

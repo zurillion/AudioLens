@@ -30,6 +30,12 @@ final class PreferencesWindowController: NSWindowController,
     private let cacheSizeLabel = NSTextField(labelWithString: "")
     private let cacheStatusLabel = NSTextField(labelWithString: "")
 
+    /// Tracked so we can enforce mutual exclusivity manually — the theme
+    /// radios live in nested NSStackView rows (each row also holds colour
+    /// swatches), so AppKit's auto-grouping (which needs a shared superview
+    /// PLUS same target+action) doesn't fire.
+    private var themeRadios: [NSButton] = []
+
     private var bindingsObserver: (any NSObjectProtocol)?
     private var recordingAction: KeyboardAction?
 
@@ -98,13 +104,15 @@ final class PreferencesWindowController: NSWindowController,
         title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
 
         let desc = NSTextField(wrappingLabelWithString:
-            "Themes tint the waveform stroke, the filename label, and the "
-            + "follow-playhead button. Semantic colours (playhead, loop, "
-            + "bookmarks, VU meter) stay constant across themes.")
+            "Themes tint the waveform stroke, the filename label, the "
+            + "follow-playhead button, and the main window background. "
+            + "Semantic colours (playhead, loop, bookmarks, VU meter) stay "
+            + "constant across themes.")
         desc.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         desc.textColor = .secondaryLabelColor
 
-        // One radio button per theme, with a colour swatch on its right.
+        // One radio button per theme, with colour swatches on its right.
+        themeRadios.removeAll()
         let currentID = ThemeManager.shared.current.id
         var rows: [NSView] = []
         for theme in AppTheme.all {
@@ -113,11 +121,13 @@ final class PreferencesWindowController: NSWindowController,
                                  action: #selector(themeSelected(_:)))
             radio.identifier = NSUserInterfaceItemIdentifier(theme.id)
             radio.state = (theme.id == currentID) ? .on : .off
-            // Three tiny swatches showing waveform / filename / follow tones.
+            themeRadios.append(radio)
+            // Four tiny swatches: waveform / filename / follow / window-bg.
             let swatchRow = NSStackView(views: [
                 makeSwatch(color: theme.waveformRGB.nsColor),
                 makeSwatch(color: theme.filenameRGB.nsColor),
                 makeSwatch(color: theme.followOnRGB.nsColor),
+                makeSwatch(color: theme.windowBgRGB.nsColor),
             ])
             swatchRow.orientation = .horizontal
             swatchRow.spacing = 3
@@ -168,6 +178,11 @@ final class PreferencesWindowController: NSWindowController,
     @objc private func themeSelected(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue,
               let theme = AppTheme.all.first(where: { $0.id == id }) else { return }
+        // Force-enforce mutual exclusivity across the radio set, since auto-
+        // grouping doesn't reach across the per-row NSStackViews.
+        for radio in themeRadios {
+            radio.state = (radio.identifier?.rawValue == id) ? .on : .off
+        }
         ThemeManager.shared.setTheme(theme)
     }
 
