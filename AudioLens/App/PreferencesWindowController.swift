@@ -19,12 +19,16 @@ final class PreferencesWindow: NSWindow {
 @MainActor
 final class PreferencesWindowController: NSWindowController,
                                          NSTableViewDelegate,
-                                         NSTableViewDataSource {
+                                         NSTableViewDataSource,
+                                         NSTabViewDelegate {
 
     private let tableView = NSTableView()
     private let actions = KeyboardAction.allCases
     private let statusLabel = NSTextField(labelWithString: "Select a row and click Record to assign a new shortcut.")
     private let recordButton = NSButton(title: "Record…", target: nil, action: nil)
+
+    private let cacheSizeLabel = NSTextField(labelWithString: "")
+    private let cacheStatusLabel = NSTextField(labelWithString: "")
 
     private var bindingsObserver: (any NSObjectProtocol)?
     private var recordingAction: KeyboardAction?
@@ -36,7 +40,7 @@ final class PreferencesWindowController: NSWindowController,
             backing: .buffered,
             defer: false
         )
-        window.title = "Preferences — Keyboard Shortcuts"
+        window.title = "Preferences"
         window.contentMinSize = NSSize(width: 380, height: 320)
         window.center()
         super.init(window: window)
@@ -58,12 +62,39 @@ final class PreferencesWindowController: NSWindowController,
     private func setupContent() {
         guard let content = window?.contentView else { return }
 
+        let tabView = NSTabView()
+        tabView.delegate = self
+        tabView.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(tabView)
+        NSLayoutConstraint.activate([
+            tabView.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            tabView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            tabView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            tabView.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+        ])
+
+        let shortcutsItem = NSTabViewItem(identifier: "shortcuts")
+        shortcutsItem.label = "Shortcuts"
+        shortcutsItem.view = makeShortcutsView()
+        tabView.addTabViewItem(shortcutsItem)
+
+        let cacheItem = NSTabViewItem(identifier: "cache")
+        cacheItem.label = "Cache"
+        cacheItem.view = makeCacheView()
+        tabView.addTabViewItem(cacheItem)
+
+        tableView.reloadData()
+    }
+
+    private func makeShortcutsView() -> NSView {
+        let container = NSView()
+
         let scrollView = NSScrollView()
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.borderType = .bezelBorder
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(scrollView)
+        container.addSubview(scrollView)
 
         let actionCol = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("action"))
         actionCol.title = "Action"
@@ -105,25 +136,97 @@ final class PreferencesWindowController: NSWindowController,
         buttonStack.orientation = .horizontal
         buttonStack.translatesAutoresizingMaskIntoConstraints = false
 
-        content.addSubview(statusLabel)
-        content.addSubview(buttonStack)
+        container.addSubview(statusLabel)
+        container.addSubview(buttonStack)
 
         NSLayoutConstraint.activate([
-            scrollView.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
-            scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            scrollView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             scrollView.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -10),
 
-            statusLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            statusLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            statusLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            statusLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
             statusLabel.bottomAnchor.constraint(equalTo: buttonStack.topAnchor, constant: -10),
 
-            buttonStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            buttonStack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            buttonStack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            buttonStack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            buttonStack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            buttonStack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        ])
+        return container
+    }
+
+    private func makeCacheView() -> NSView {
+        let container = NSView()
+
+        let title = NSTextField(labelWithString: "Waveform Preview Cache")
+        title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+
+        let desc = NSTextField(wrappingLabelWithString:
+            "AudioLens stores each file's computed waveform overview on disk so it "
+            + "reloads instantly the next time you open it. Clearing the cache is "
+            + "always safe — overviews are simply recomputed on next open.")
+        desc.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        desc.textColor = .secondaryLabelColor
+
+        cacheSizeLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
+
+        cacheStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        cacheStatusLabel.textColor = .secondaryLabelColor
+
+        let clearButton = NSButton(title: "Clear Cache", target: self, action: #selector(clearCache(_:)))
+        let revealButton = NSButton(title: "Reveal in Finder", target: self, action: #selector(revealCache(_:)))
+        let buttonRow = NSStackView(views: [clearButton, revealButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.spacing = 8
+
+        let stack = NSStackView(views: [title, desc, cacheSizeLabel, buttonRow, cacheStatusLabel])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            // Pin the wrapping description to the full content width so it wraps
+            // instead of collapsing to its longest token.
+            desc.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
-        tableView.reloadData()
+        updateCacheSizeLabel()
+        return container
+    }
+
+    // MARK: - Cache
+
+    private func updateCacheSizeLabel() {
+        let bytes = WaveformCache.totalSize()
+        let count = WaveformCache.entryCount()
+        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        let fileWord = count == 1 ? "file" : "files"
+        cacheSizeLabel.stringValue = "Current size: \(size)  (\(count) \(fileWord))"
+    }
+
+    @objc private func clearCache(_ sender: NSButton) {
+        let freed = WaveformCache.clear()
+        updateCacheSizeLabel()
+        let size = ByteCountFormatter.string(fromByteCount: freed, countStyle: .file)
+        cacheStatusLabel.stringValue = freed > 0 ? "Freed \(size)." : "Cache was already empty."
+    }
+
+    @objc private func revealCache(_ sender: NSButton) {
+        guard let dir = WaveformCache.directoryURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([dir])
+    }
+
+    func tabView(_ tabView: NSTabView, didSelect tabViewItem: NSTabViewItem?) {
+        if tabViewItem?.identifier as? String == "cache" {
+            updateCacheSizeLabel()
+            cacheStatusLabel.stringValue = ""
+        }
     }
 
     // MARK: - Table

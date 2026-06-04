@@ -22,6 +22,39 @@ enum WaveformCache {
         try? encode(mins: mins, maxs: maxs).write(to: url, options: .atomic)
     }
 
+    // MARK: - Maintenance
+
+    /// The cache directory (created on demand). Exposed for "Reveal in Finder".
+    static var directoryURL: URL? { cacheDirectory() }
+
+    private static func cachedFiles() -> [URL] {
+        guard let dir = cacheDirectory() else { return [] }
+        let items = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles])
+        return (items ?? []).filter { $0.pathExtension == "overview" }
+    }
+
+    /// Number of cached overview files.
+    static func entryCount() -> Int { cachedFiles().count }
+
+    /// Total size in bytes of all cached overviews.
+    static func totalSize() -> Int64 {
+        cachedFiles().reduce(0) { sum, url in
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            return sum + Int64(size)
+        }
+    }
+
+    /// Delete every cached overview. Returns the number of bytes freed.
+    @discardableResult
+    static func clear() -> Int64 {
+        let freed = totalSize()
+        for url in cachedFiles() { try? FileManager.default.removeItem(at: url) }
+        return freed
+    }
+
     // MARK: - Keying
 
     private static func cacheURL(for fileURL: URL) -> URL? {
