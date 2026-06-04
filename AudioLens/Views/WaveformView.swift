@@ -460,7 +460,9 @@ final class WaveformView: NSView {
 
         visibleStart = newStart
         visibleEnd = newEnd
-        autoFollowPlayhead = false
+        // Zoom alone doesn't disable auto-follow: the user is just looking
+        // more closely. Only an explicit *pan* (which means "show me a
+        // different spot") shuts off the follow.
         positionPlayhead()
         needsDisplay = true
     }

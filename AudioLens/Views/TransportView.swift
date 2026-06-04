@@ -126,7 +126,7 @@ final class TransportView: NSView {
 
         let stack = NSStackView(views: [
             playButton, stopButton, loopButton, bookmarkButton, bookmarksPopup, timeLabel,
-            zoomOutButton, zoomInButton,
+            zoomInButton, zoomOutButton,
             spacer, fileBlock
         ])
         stack.orientation = .horizontal
