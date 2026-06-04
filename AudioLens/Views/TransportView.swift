@@ -22,14 +22,15 @@ final class TransportView: NSView {
     var onZoomOut: (() -> Void)?
     var onFollowTapped: (() -> Void)?
 
-    /// Soft green used for the filename and the file-info line beneath it.
-    private static let fileColor = NSColor(srgbRed: 0.45, green: 0.82, blue: 0.5, alpha: 1.0)
-    /// Two-tone follow-button state. "On" is a strong filled chip
-    /// (system blue background, white icon) because a `.rounded` bezel
-    /// swallows mere `contentTintColor` changes — without the background
-    /// fill the lit state was indistinguishable from off on most setups.
+    /// Cached so the follow button can refresh its background on theme change
+    /// without needing a state push from the WaveformView.
+    private var followIsOn = true
+    private var themeObserver: (any NSObjectProtocol)?
+
+    /// Two-tone follow-button foreground. The "on" background comes from the
+    /// current theme (ThemeManager.followOnColor) and is applied in
+    /// setFollowPlayhead, so a theme switch updates the lit chip live.
     private static let followOnFg = NSColor.white
-    private static let followOnBg = NSColor.systemBlue
     private static let followOffFg = NSColor.tertiaryLabelColor
 
     init(audioEngine: AudioEngine) {
@@ -37,10 +38,17 @@ final class TransportView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         setupSubviews()
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: .themeChanged, object: nil, queue: .main
+        ) { [weak self] _ in self?.applyTheme() }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
     }
 
     func refresh() {
@@ -76,7 +84,7 @@ final class TransportView: NSView {
         loopButton.action = #selector(toggleLoop(_:))
         loopButton.state = audioEngine.loopMode ? .on : .off
 
-        statusLabel.textColor = Self.fileColor
+        statusLabel.textColor = ThemeManager.shared.filenameColor
 
         bookmarkButton.image = NSImage(systemSymbolName: "bookmark", accessibilityDescription: "Add Bookmark")
         bookmarkButton.title = "+"
@@ -134,9 +142,10 @@ final class TransportView: NSView {
         followButton.heightAnchor.constraint(equalToConstant: 22).isActive = true
         setFollowPlayhead(on: true)   // initially lit
 
-        // Filename (green) with a smaller file-info line beneath it, pushed to
-        // the trailing edge by a spacer. Both truncate before crowding the row.
-        fileInfoLabel.textColor = Self.fileColor.withAlphaComponent(0.85)
+        // Filename + a smaller file-info line beneath it, pushed to the
+        // trailing edge by a spacer. Both truncate before crowding the row.
+        // Colours come from the current theme and refresh via the notification.
+        fileInfoLabel.textColor = ThemeManager.shared.filenameColor.withAlphaComponent(0.85)
         fileInfoLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         for label in [statusLabel, fileInfoLabel] {
             label.lineBreakMode = .byTruncatingTail
@@ -216,12 +225,22 @@ final class TransportView: NSView {
 
     /// Update the follow button's glow to match the waveform's actual state.
     func setFollowPlayhead(on: Bool) {
+        followIsOn = on
         followButton.contentTintColor = on ? Self.followOnFg : Self.followOffFg
-        followButton.layer?.backgroundColor = (on ? Self.followOnBg : NSColor.clear).cgColor
+        followButton.layer?.backgroundColor =
+            (on ? ThemeManager.shared.followOnColor : NSColor.clear).cgColor
         // Belt-and-suspenders: a clearly different overall opacity in case
         // contentTintColor / layer background aren't producing visible
         // differentiation on a given system.
         followButton.alphaValue = on ? 1.0 : 0.55
+    }
+
+    /// Re-applied when the user picks a different theme.
+    private func applyTheme() {
+        let theme = ThemeManager.shared
+        statusLabel.textColor = theme.filenameColor
+        fileInfoLabel.textColor = theme.filenameColor.withAlphaComponent(0.85)
+        setFollowPlayhead(on: followIsOn)   // refreshes the chip's bg colour
     }
 }
 

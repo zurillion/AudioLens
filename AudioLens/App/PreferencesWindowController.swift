@@ -78,12 +78,97 @@ final class PreferencesWindowController: NSWindowController,
         shortcutsItem.view = makeShortcutsView()
         tabView.addTabViewItem(shortcutsItem)
 
+        let themesItem = NSTabViewItem(identifier: "themes")
+        themesItem.label = "Themes"
+        themesItem.view = makeThemesView()
+        tabView.addTabViewItem(themesItem)
+
         let cacheItem = NSTabViewItem(identifier: "cache")
         cacheItem.label = "Cache"
         cacheItem.view = makeCacheView()
         tabView.addTabViewItem(cacheItem)
 
         tableView.reloadData()
+    }
+
+    private func makeThemesView() -> NSView {
+        let container = NSView()
+
+        let title = NSTextField(labelWithString: "Interface Theme")
+        title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+
+        let desc = NSTextField(wrappingLabelWithString:
+            "Themes tint the waveform stroke, the filename label, and the "
+            + "follow-playhead button. Semantic colours (playhead, loop, "
+            + "bookmarks, VU meter) stay constant across themes.")
+        desc.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        desc.textColor = .secondaryLabelColor
+
+        // One radio button per theme, with a colour swatch on its right.
+        let currentID = ThemeManager.shared.current.id
+        var rows: [NSView] = []
+        for theme in AppTheme.all {
+            let radio = NSButton(radioButtonWithTitle: theme.displayName,
+                                 target: self,
+                                 action: #selector(themeSelected(_:)))
+            radio.identifier = NSUserInterfaceItemIdentifier(theme.id)
+            radio.state = (theme.id == currentID) ? .on : .off
+            // Three tiny swatches showing waveform / filename / follow tones.
+            let swatchRow = NSStackView(views: [
+                makeSwatch(color: theme.waveformRGB.nsColor),
+                makeSwatch(color: theme.filenameRGB.nsColor),
+                makeSwatch(color: theme.followOnRGB.nsColor),
+            ])
+            swatchRow.orientation = .horizontal
+            swatchRow.spacing = 3
+            let spacer = NSView()
+            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let row = NSStackView(views: [radio, spacer, swatchRow])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            rows.append(row)
+        }
+
+        let radioStack = NSStackView(views: rows)
+        radioStack.orientation = .vertical
+        radioStack.alignment = .leading
+        radioStack.spacing = 6
+        radioStack.distribution = .fill
+
+        let stack = NSStackView(views: [title, desc, radioStack])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 20),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            desc.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            radioStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
+        ])
+        return container
+    }
+
+    private func makeSwatch(color: NSColor) -> NSView {
+        let v = NSView()
+        v.wantsLayer = true
+        v.layer?.backgroundColor = color.cgColor
+        v.layer?.cornerRadius = 3
+        v.layer?.borderWidth = 0.5
+        v.layer?.borderColor = NSColor.separatorColor.cgColor
+        v.translatesAutoresizingMaskIntoConstraints = false
+        v.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        v.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        return v
+    }
+
+    @objc private func themeSelected(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue,
+              let theme = AppTheme.all.first(where: { $0.id == id }) else { return }
+        ThemeManager.shared.setTheme(theme)
     }
 
     private func makeShortcutsView() -> NSView {

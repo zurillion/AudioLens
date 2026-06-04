@@ -145,6 +145,8 @@ final class WaveformView: NSView {
     private var draggedBookmarkFrame: AVAudioFramePosition = 0
     private var bookmarkDidMove = false
 
+    private var themeObserver: (any NSObjectProtocol)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -167,6 +169,18 @@ final class WaveformView: NSView {
         let pinch = NSMagnificationGestureRecognizer(
             target: self, action: #selector(handlePinch(_:)))
         addGestureRecognizer(pinch)
+
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: .themeChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            // Theme only changes the waveform stroke colour; everything else
+            // is sourced fresh on each draw, so a redraw is all we need.
+            self?.needsDisplay = true
+        }
+    }
+
+    deinit {
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
     }
 
     required init?(coder: NSCoder) {
@@ -694,7 +708,7 @@ final class WaveformView: NSView {
         let width = bounds.width
         guard width >= 1 else { return }
 
-        ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+        ctx.setStrokeColor(ThemeManager.shared.waveformColor.cgColor)
         ctx.setLineWidth(1)
 
         let columns = Int(width)
