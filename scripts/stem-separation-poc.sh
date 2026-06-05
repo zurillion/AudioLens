@@ -68,8 +68,16 @@ fi
 # automatically — no OpenBLAS, no Homebrew. (On Linux it grabs OpenBLAS via apt.)
 if [[ ! -x "$BUILD_DIR/demucs_mt.cpp.main" ]]; then
     echo "==> configuring + building (Release)…"
+    # Wipe any half-baked cache from a previous failed configure so the new
+    # policy flag gets honoured cleanly.
+    rm -rf "$BUILD_DIR"
     mkdir -p "$BUILD_DIR"
-    cmake -S "$REPO_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release >/dev/null
+    # -DCMAKE_POLICY_VERSION_MINIMUM=3.5 keeps modern CMake (>= 4) happy with
+    # the older cmake_minimum_required(...) calls in demucs.cpp and its
+    # vendored submodules (Eigen, libnyquist, googletest).
+    cmake -S "$REPO_DIR" -B "$BUILD_DIR" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
     cmake --build "$BUILD_DIR" -j "$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
         --target demucs_mt.cpp.main >/dev/null
 else
