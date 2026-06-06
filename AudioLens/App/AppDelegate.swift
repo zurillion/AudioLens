@@ -77,6 +77,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openRecentMenu.autoenablesItems = false
         openRecentItem.submenu = openRecentMenu
         fileMenu.addItem(openRecentItem)
+
+        // Dev-only: trigger stem separation on the currently-loaded file.
+        // Wires the StemSeparator boundary end-to-end (subprocess to
+        // demucs.cpp) without yet touching the audio engine — useful for
+        // validating Phase 1 of the stem-separation work.
+        fileMenu.addItem(NSMenuItem.separator())
+        fileMenu.addItem(withTitle: "Separate Stems… (Dev)",
+                         action: #selector(MainWindowController.separateStems(_:)),
+                         keyEquivalent: "")
+
         fileMenuItem.submenu = fileMenu
 
         // Controls menu. The keyboard shortcuts for these actions are not set

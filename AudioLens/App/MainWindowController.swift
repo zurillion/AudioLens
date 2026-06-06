@@ -160,6 +160,81 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
         audioEngine.bookmarkMenuEntries
     }
 
+    // MARK: - Stem separation (Phase 1: dev-only menu trigger)
+
+    /// Run the configured `StemSeparator` on the currently-loaded file.
+    /// Phase 1 just wires the boundary end-to-end and dumps the output WAVs
+    /// next to a temp directory; Phase 3+ will plug the results back into
+    /// AudioEngine for playback.
+    @objc func separateStems(_ sender: Any?) {
+        guard let window else { return }
+        guard let sourceURL = audioEngine.sourceURL else {
+            let alert = NSAlert()
+            alert.messageText = "No file loaded"
+            alert.informativeText = "Open an audio file first, then separate its stems."
+            alert.beginSheetModal(for: window, completionHandler: nil)
+            return
+        }
+        // Project root assumption (dev): repo lives at
+        // ~/Documents/GitHub/AudioLens, where the PoC script also built the
+        // demucs.cpp binary and downloaded the weights.
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let projectRoot = home
+            .appendingPathComponent("Documents")
+            .appendingPathComponent("GitHub")
+            .appendingPathComponent("AudioLens")
+        let separator = DemucsCppSeparator.developmentLocal(projectRoot: projectRoot)
+
+        // Stick the output under the system temp dir for now; the cache
+        // layer (Phase 2) will move this into ~/Library/Caches/AudioLens.
+        let outputBase = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AudioLens-Stems")
+        let outputDir = outputBase.appendingPathComponent(
+            sourceURL.deletingPathExtension().lastPathComponent)
+
+        let progressController = StemProgressSheet(filename: sourceURL.lastPathComponent)
+        progressController.attach(to: window)
+        let separationTask = Task {
+            do {
+                let stems = try await separator.separate(
+                    sourceURL: sourceURL,
+                    outputDirectory: outputDir
+                ) { @Sendable _ in
+                    // demucs.cpp doesn't report intermediate progress yet;
+                    // the sheet shows an indeterminate spinner instead.
+                }
+                progressController.detach()
+                showStemSeparationSuccess(stems: stems, outputDir: outputDir)
+            } catch {
+                progressController.detach()
+                if case StemSeparationError.cancelled = error {
+                    return   // user-cancelled, no alert needed
+                }
+                showError(error)
+            }
+        }
+        progressController.onCancel = { separationTask.cancel() }
+    }
+
+    private func showStemSeparationSuccess(stems: [StemFile], outputDir: URL) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Stem separation complete"
+        alert.informativeText = """
+            Produced \(stems.count) stems:
+            \(stems.map { "  • \($0.displayName) → \($0.url.lastPathComponent)" }.joined(separator: "\n"))
+
+            Folder: \(outputDir.path)
+            """
+        alert.addButton(withTitle: "Reveal in Finder")
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn {
+                NSWorkspace.shared.activateFileViewerSelecting(stems.map { $0.url })
+            }
+        }
+    }
+
     private func load(url: URL) async {
         rootViewController.willBeginLoading()
         do {
