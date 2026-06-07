@@ -28,9 +28,36 @@ struct DemucsCppSeparator: StemSeparator {
         self.ompThreadCount = ompThreadCount
     }
 
-    /// Convenience for development: assumes `scripts/stem-separation-poc.sh`
-    /// has been run from `projectRoot`, leaving the binary + weights under
-    /// `<projectRoot>/.stems-poc/…`.
+    /// Convenience for development: locates the binary + weights that
+    /// `scripts/stem-separation-poc.sh` produces under
+    /// `<projectRoot>/.stems-poc/`.
+    ///
+    /// `projectRoot` is discovered (in order):
+    ///  1. The `AUDIOLENS_STEMS_POC` env var, if set — point this at the
+    ///     project root in your Xcode scheme to override everything.
+    ///  2. `~/Documents/GitHub/AudioLens` resolved via `getpwuid(getuid())`,
+    ///     so it works even when the App Sandbox is enabled (which redirects
+    ///     `FileManager.homeDirectoryForCurrentUser` to the container's
+    ///     fake "home" inside `~/Library/Containers/…/Data/`).
+    ///
+    /// Note: the subprocess launch *itself* still requires the sandbox to
+    /// be off — flip `com.apple.security.app-sandbox` to `false` in
+    /// `AudioLens/AudioLens.entitlements`, **then Clean Build Folder** so
+    /// the entitlement change actually takes effect.
+    static func developmentLocal() -> DemucsCppSeparator {
+        if let override = ProcessInfo.processInfo.environment["AUDIOLENS_STEMS_POC"] {
+            return developmentLocal(projectRoot: URL(fileURLWithPath: override))
+        }
+        let home = realHomeDirectory()
+        let projectRoot = home
+            .appendingPathComponent("Documents")
+            .appendingPathComponent("GitHub")
+            .appendingPathComponent("AudioLens")
+        return developmentLocal(projectRoot: projectRoot)
+    }
+
+    /// Explicit override: use this if your project lives somewhere other
+    /// than `~/Documents/GitHub/AudioLens/`.
     static func developmentLocal(projectRoot: URL) -> DemucsCppSeparator {
         let pocDir = projectRoot.appendingPathComponent(".stems-poc")
         return DemucsCppSeparator(
@@ -41,6 +68,16 @@ struct DemucsCppSeparator: StemSeparator {
             weightsURL: pocDir
                 .appendingPathComponent("weights")
                 .appendingPathComponent("ggml-model-htdemucs-4s-f16.bin"))
+    }
+
+    /// True home directory (`/Users/<username>/`) from the system password
+    /// database, even from inside an App Sandbox that would otherwise remap
+    /// `FileManager.homeDirectoryForCurrentUser` to the container path.
+    private static func realHomeDirectory() -> URL {
+        if let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: dir))
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
     }
 
     func separate(

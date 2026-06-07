@@ -175,15 +175,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate {
             alert.beginSheetModal(for: window, completionHandler: nil)
             return
         }
-        // Project root assumption (dev): repo lives at
-        // ~/Documents/GitHub/AudioLens, where the PoC script also built the
-        // demucs.cpp binary and downloaded the weights.
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let projectRoot = home
-            .appendingPathComponent("Documents")
-            .appendingPathComponent("GitHub")
-            .appendingPathComponent("AudioLens")
-        let separator = DemucsCppSeparator.developmentLocal(projectRoot: projectRoot)
+        // Auto-discovers the .stems-poc directory in the user's checkout via
+        // getpwuid (so it works regardless of sandbox container redirection).
+        // Override with the AUDIOLENS_STEMS_POC env var if the project lives
+        // elsewhere.
+        let separator = DemucsCppSeparator.developmentLocal()
 
         // Stick the output under the system temp dir for now; the cache
         // layer (Phase 2) will move this into ~/Library/Caches/AudioLens.
