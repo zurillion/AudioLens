@@ -24,21 +24,40 @@ enum StemSeparationError: Error, LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .missingBinary(let url):
-            return "Stem-separator binary not found at \(url.path)."
-        case .missingWeights(let url):
-            return "Model weights not found at \(url.path)."
+        case .missingBinary:        return "Stem-separator binary not accessible."
+        case .missingWeights:       return "Model weights not accessible."
+        case .sourceFileMissing:    return "Source audio not accessible."
+        case .launchFailed:         return "Couldn't launch stem-separator subprocess."
+        case .inferenceFailed:      return "Stem separation failed."
+        case .missingOutput:        return "A stem file is missing from the output."
+        case .cancelled:            return "Stem separation cancelled."
+        }
+    }
+
+    var recoverySuggestion: String? {
+        switch self {
+        case .missingBinary(let url), .missingWeights(let url):
+            return """
+                Looked at:
+                \(url.path)
+
+                If the file is at that path, the App Sandbox is blocking access — \
+                disable com.apple.security.app-sandbox in \
+                AudioLens/AudioLens.entitlements, then Clean Build Folder (⇧⌘K) \
+                and rebuild. If the file isn't there, re-run \
+                scripts/stem-separation-poc.sh.
+                """
         case .sourceFileMissing(let url):
-            return "Source audio not found at \(url.path)."
+            return "Looked at:\n\(url.path)"
         case .launchFailed(let detail):
-            return "Could not launch stem-separator subprocess: \(detail)"
+            return detail
         case .inferenceFailed(let code, let err):
             let tail = err.split(separator: "\n").suffix(8).joined(separator: "\n")
-            return "Stem separation failed (exit \(code)).\n\(tail)"
+            return "Subprocess exited \(code).\n\(tail)"
         case .missingOutput(let expected):
-            return "Separator did not produce expected file '\(expected)'."
+            return "Expected file: \(expected)"
         case .cancelled:
-            return "Stem separation cancelled."
+            return nil
         }
     }
 }
